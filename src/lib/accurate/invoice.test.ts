@@ -69,6 +69,7 @@ describe("buildInvoice", () => {
       defaultSettings(),
       "2026-10-26",
     );
+    expect(buildInvoice([line({ tanggal: "2026-10-26T19:34:29.000Z", channel: "SHOPEE" })], defaultSettings(), "2026-10-26").fields.transDate).toBe("26/10/2026");
     expect(draft.fields.customerNo).toBe("SHOPEE");
     expect(draft.fields["detailItem[0].unitPrice"]).toBe("1074.21875");
     expect(draft.fields["detailItem[0].warehouseName"]).toBe("Gudang Lintas Surabaya");

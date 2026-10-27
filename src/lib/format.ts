@@ -48,8 +48,10 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
+  // SheetJS reads Excel wall-clock times as UTC. Jubelio already stores local time,
+  // so formatting in UTC keeps the clock and the calendar day from the file.
   return new Intl.DateTimeFormat("id-ID", {
-    timeZone: "Asia/Jakarta",
+    timeZone: "UTC",
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -63,7 +65,7 @@ export function accurateDate(iso: string | null | undefined, fallbackDay: string
     const date = new Date(iso);
     if (!Number.isNaN(date.getTime())) {
       const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: "Asia/Jakarta",
+        timeZone: "UTC",
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
