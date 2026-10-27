@@ -2,6 +2,38 @@
 
 Aplikasi internal Asiacommerce Network untuk menampung laporan penjualan harian Jubelio yang sudah dirapikan, sebelum dikirim sebagai faktur penjualan (sales invoice) ke Accurate Online.
 
+## Deploy to Vercel
+
+Impor dari GitHub, bukan dari unggahan zip.
+
+1. Di [vercel.com/new](https://vercel.com/new), pilih **Import Project** dari GitHub.
+2. Pilih repositori `mataharilabs/jubelio-accurate-staging` (private). Kalau belum muncul, hubungkan akun GitHub @mataharilabs di Vercel dan izinkan akses ke repo itu.
+3. Framework preset: **Next.js**. Root directory kosong (repo ini ada di root). Build command `npm run build`, output biarkan bawaan Next.js. Jangan menimpa install command.
+4. Isi environment production sebelum deploy. Jangan memasukkan `.env.local` atau `data/local-db.json` ke repo. Berkas lokal itu diabaikan git; di Vercel sampel dimuat dari `samples/` hanya selama Supabase kosong, dan disk Vercel tidak awet. Untuk produksi isi Supabase.
+
+Wajib:
+
+| Variabel | Nilai |
+| --- | --- |
+| `NEXT_PUBLIC_APP_URL` | URL publik, diawali `https://` (domain Vercel atau domain sendiri). Dipakai cookie dan redirect OAuth. |
+| `AUTH_SECRET` | String acak panjang. Menandatangani cookie sesi. |
+| `SUPABASE_URL` | URL proyek Supabase. |
+| `SUPABASE_ANON_KEY` | Kunci anon, untuk login email. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Kunci service role. Hanya di server. Jangan memakai prefiks `NEXT_PUBLIC_`. |
+
+Accurate, setelah aplikasi terdaftar di area developer:
+
+| Variabel | Nilai |
+| --- | --- |
+| `ACCURATE_CLIENT_ID` | Client ID. |
+| `ACCURATE_CLIENT_SECRET` | Client secret. Jangan menulisnya di kode. |
+| `ACCURATE_REDIRECT_URI` | Opsional. Bawaan: `{NEXT_PUBLIC_APP_URL}/api/accurate/callback`. Daftarkan URI yang sama di Accurate. |
+| `ACCURATE_DATABASE_ID` | Opsional. Bisa diisi nanti dari halaman Pengaturan. |
+
+`DEMO_ADMIN_EMAIL` dan `DEMO_ADMIN_PASSWORD` hanya untuk mode lokal saat ketiga variabel Supabase kosong. Jangan mengandalkannya di Vercel.
+
+Setelah deploy pertama, jalankan `supabase/migrations/0001_init.sql` di SQL Editor Supabase, buat user admin di Authentication → Users, lalu daftarkan redirect Accurate `https://domain-anda/api/accurate/callback`.
+
 Satu batch = satu tanggal laporan. Baris bundle dipecah memakai tabel bobot. Admin meninjau, mengoreksi, lalu menekan **Sync ke Accurate**. Sebelum kredensial Accurate ada, mode pratinjau menampilkan payload persis yang akan dikirim.
 
 ## Menjalankan lokal
@@ -82,14 +114,7 @@ Kalau ketiga variabel terisi, login berpindah ke Supabase Auth dan data berpinda
 | `ACCURATE_REDIRECT_URI` | Opsional. Bawaan: `{NEXT_PUBLIC_APP_URL}/api/accurate/callback`. |
 | `ACCURATE_DATABASE_ID` | Opsional. Bisa diisi dari halaman Pengaturan. |
 
-## Deploy ke Vercel
-
-1. Push repositori ini, impor ke Vercel (framework Next.js, tanpa setelan khusus).
-2. Isi environment yang sama dengan produksi. `NEXT_PUBLIC_APP_URL` harus URL Vercel atau domain sendiri, diawali `https://`.
-3. Di Accurate, daftarkan redirect URI produksi: `https://domain-anda/api/accurate/callback`.
-4. Jalankan SQL migrasi di Supabase sebelum trafik pertama. Tanpa Supabase, Vercel hanya punya disk sementara dan data hilang.
-
-`npm run build` harus lulus sebelum deploy.
+Langkah impor Vercel dan daftar environment ada di bagian **Deploy to Vercel** di atas. `npm run build` harus lulus sebelum deploy. Tanpa Supabase, Vercel hanya punya disk sementara dan data hilang.
 
 ## Menghubungkan Accurate
 
