@@ -41,12 +41,12 @@ Port dari `scripts/rapikan.py`. Tes `src/lib/cleanup/rapikan.test.ts` membanding
 3. SKU = `item_code_bundle` bila terisi, selain itu SKU asal.
 4. Qty = Qty untuk barang satuan; `qty_bundle × Qty` untuk bundle.
 5. Bobot = cari kunci `SKU-item_code_bundle` di tabel bundle. Barang satuan bobotnya 1. Kalau kunci bundle tidak ada, baris **tetap disimpan** dan ditandai bobot hilang — tidak dibuang diam-diam.
-6. Harga jual (kotor, sebelum diskon): selain Shopee = `Qty × Harga Jual × bobot`; Shopee (`Channel` setelah di-trim dan dijadikan huruf besar sama dengan `SHOPEE`) = `Total Penjualan Per Produk × bobot`.
+6. Unit Price: selain Shopee = `Qty × Harga Jual × bobot` (nilai kotor satu baris). Shopee (`Channel` setelah di-trim dan dijadikan huruf besar sama dengan `SHOPEE`) = `Total Penjualan Per Produk × bobot ÷ Qty`. Qty pada rumus Shopee adalah jumlah paket di kolom Qty Jubelio, sebelum dikali `qty_bundle`.
 7. Total diskon: selain Shopee = `(Diskon + Diskon Lainnya + Biaya Lainnya) × bobot`; Shopee = `Diskon Lainnya × bobot`.
 
-Kolom keluaran: No Pesanan, Channel, SKU, Qty, Harga Jual, Total Diskon. Konteks yang ikut tersimpan: tanggal, lokasi gudang, nama toko, status Jubelio, nomor pesanan asal, dan batch sumber.
+Kolom keluaran: No Pesanan, Channel, SKU, Qty, Unit Price, Total Diskon. Konteks yang ikut tersimpan: tanggal, lokasi gudang, nama toko, status Jubelio, nomor pesanan asal, dan batch sumber.
 
-Di Accurate, `unitPrice = Harga Jual / Qty` dan `itemCashDiscount = Total Diskon` (diskon baris, bukan per unit).
+Di Accurate field-nya tetap `detailItem[n].unitPrice`, yaitu harga per Qty keluaran (barang satuan, atau `qty_bundle × Qty` untuk bundle). Selain Shopee, Unit Price sudah berupa nilai baris, jadi `unitPrice = Unit Price / Qty`. Untuk Shopee, Unit Price adalah harga per paket, jadi `unitPrice = Unit Price × Qty paket / Qty`. `itemCashDiscount = Total Diskon` (diskon baris, bukan per unit). Angka kotor di dasbor menjumlahkan nilai baris itu, bukan kolom Unit Price Shopee.
 
 ## Supabase
 

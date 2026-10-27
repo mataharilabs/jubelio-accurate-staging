@@ -107,6 +107,31 @@ export function isShopeeChannel(channel: string | null): boolean {
   return (channel ?? "").trim().toUpperCase() === "SHOPEE";
 }
 
+/**
+ * Shopee Unit Price is per original Jubelio package.
+ * Qty here is the source Qty column, before qty_bundle expands the line.
+ * A zero package count cannot be divided; the price is stored as 0.
+ */
+export function shopeeUnitPrice(totalPenjualanPerProduk: number, bobot: number, packageQty: number): number {
+  if (!(packageQty > 0)) return 0;
+  return (totalPenjualanPerProduk * bobot) / packageQty;
+}
+
+/**
+ * Allocated amount of the line before discount.
+ * Non-Shopee Unit Price is already that amount. Shopee Unit Price is per package,
+ * so the line amount is Unit Price × original Qty.
+ */
+export function lineAmount(line: {
+  hargaJual: number | null;
+  isShopee: boolean;
+  sourceQty: number;
+}): number {
+  if (line.hargaJual == null) return 0;
+  if (!line.isShopee) return line.hargaJual;
+  return line.sourceQty > 0 ? line.hargaJual * line.sourceQty : 0;
+}
+
 export function bundleKeyOf(sku: string | null, itemCodeBundle: string | null): string | null {
   if (!isBundleRow(itemCodeBundle)) return null;
   return `${(sku ?? "").trim()}-${(itemCodeBundle ?? "").trim()}`;
@@ -132,7 +157,7 @@ export function cleanRow(row: RawSalesRow, weights: Map<string, number>): CleanL
     hargaJual = null;
     totalDiskon = null;
   } else if (shopee) {
-    hargaJual = num(row.totalPenjualanPerProduk) * bobot;
+    hargaJual = shopeeUnitPrice(num(row.totalPenjualanPerProduk), bobot, num(row.qty));
     totalDiskon = num(row.diskonLainnya) * bobot;
   } else {
     hargaJual = num(row.qty) * num(row.hargaJual) * bobot;
@@ -204,7 +229,7 @@ export function recomputeAmounts(line: {
   if (line.isShopee) {
     return {
       qty,
-      hargaJual: line.sourceTotalPenjualan * bobot,
+      hargaJual: shopeeUnitPrice(line.sourceTotalPenjualan, bobot, line.sourceQty),
       totalDiskon: line.sourceDiskonLainnya * bobot,
       bobot,
       missingWeight: false,

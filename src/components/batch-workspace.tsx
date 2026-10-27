@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { api } from "@/lib/api-client";
+import { lineAmount } from "@/lib/cleanup/rapikan";
 import { formatDateTime, formatDay, formatDecimal, formatNumber, formatRp, SYNC_LABEL } from "@/lib/format";
 import type { Batch, LinePatch, OrderSync, SalesLine, SyncStatus } from "@/lib/db/types";
 import type { OrderPreview } from "@/lib/sync-types";
@@ -88,7 +89,7 @@ export function BatchWorkspace({ batchId }: { batchId: string }) {
   const someChecked = filtered.some((line) => selected.has(line.id));
 
   const totals = useMemo(() => {
-    const gross = filtered.reduce((sum, line) => sum + (line.hargaJual ?? 0), 0);
+    const gross = filtered.reduce((sum, line) => sum + lineAmount(line), 0);
     const discount = filtered.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
     const orders = new Set(filtered.map((line) => line.noPesanan)).size;
     const missing = filtered.filter((line) => line.missingWeight).length;
@@ -257,7 +258,7 @@ export function BatchWorkspace({ batchId }: { batchId: string }) {
               <th className="px-3 py-3 font-medium">Channel</th>
               <th className="px-3 py-3 font-medium">SKU</th>
               <th className="px-3 py-3 font-medium">Qty</th>
-              <th className="px-3 py-3 font-medium">Harga Jual</th>
+              <th className="px-3 py-3 font-medium">Unit Price</th>
               <th className="px-3 py-3 font-medium">Total Diskon</th>
               <th className="px-3 py-3 font-medium">Lokasi</th>
               <th className="px-3 py-3 font-medium">Sinkron</th>
@@ -394,7 +395,7 @@ export function BatchWorkspace({ batchId }: { batchId: string }) {
                   {busy ? "Mengirim…" : `Sync ke Accurate (${preview.filter((item) => !item.blockedReason && !item.skippedReason).length} siap)`}
                 </Button>
               </div>
-              <p className="mt-2 text-xs text-muted">Tanpa token Accurate, pengiriman ditolak dan tidak mengubah status menjadi tersinkron. unitPrice = Harga Jual ÷ Qty. itemCashDiscount = Total Diskon baris.</p>
+              <p className="mt-2 text-xs text-muted">Tanpa token Accurate, pengiriman ditolak dan status tidak menjadi tersinkron. Accurate unitPrice tetap harga per Qty baris. Shopee: Unit Price × Qty paket ÷ Qty. Selain Shopee: Unit Price ÷ Qty. itemCashDiscount = Total Diskon baris.</p>
             </div>
           </div>
         ) : null}
@@ -481,13 +482,13 @@ function EditDialog({ line, onClose, onSaved }: { line: SalesLine; onClose: () =
         <Field label="Channel" value={form.channel} onChange={(value) => setForm({ ...form, channel: value })} />
         <Field label="SKU" value={form.sku} onChange={(value) => setForm({ ...form, sku: value })} />
         <Field label="Qty" value={form.qty} onChange={(value) => setForm({ ...form, qty: value })} />
-        <Field label="Harga Jual (kotor baris)" value={form.hargaJual} onChange={(value) => setForm({ ...form, hargaJual: value })} />
+        <Field label="Unit Price" value={form.hargaJual} onChange={(value) => setForm({ ...form, hargaJual: value })} />
         <Field label="Total Diskon" value={form.totalDiskon} onChange={(value) => setForm({ ...form, totalDiskon: value })} />
         <Field label="Lokasi gudang" value={form.lokasiGudang} onChange={(value) => setForm({ ...form, lokasiGudang: value })} />
         <Field label="Nama toko" value={form.namaToko} onChange={(value) => setForm({ ...form, namaToko: value })} />
         <Field label="Status Jubelio" value={form.status} onChange={(value) => setForm({ ...form, status: value })} />
         <div className="rounded-md bg-[#f6f2e9] px-3 py-2 text-xs leading-relaxed text-muted sm:col-span-2">
-          SKU asal {line.sourceSku || "—"} · kunci bundle {line.bundleKey || "—"} · bobot {line.bobot == null ? "tidak ada" : formatDecimal(line.bobot)} · {line.isShopee ? "rumus Shopee" : "rumus non-Shopee"}.
+          SKU asal {line.sourceSku || "—"} · kunci bundle {line.bundleKey || "—"} · bobot {line.bobot == null ? "tidak ada" : formatDecimal(line.bobot)} · {line.isShopee ? "Unit Price Shopee per Qty paket asal" : "Unit Price non-Shopee = nilai kotor baris"}.
           No pesanan asal {line.noPesananSumber || "—"}. Hitung ulang dari tombol batch menimpa harga dan qty dengan angka asal.
         </div>
         {error ? <p className="text-sm text-danger sm:col-span-2">{error}</p> : null}
@@ -526,7 +527,7 @@ function OrderBody({
   onDelete: () => Promise<void>;
   onReset: () => Promise<void>;
 }) {
-  const gross = lines.reduce((sum, line) => sum + (line.hargaJual ?? 0), 0);
+  const gross = lines.reduce((sum, line) => sum + lineAmount(line), 0);
   const discount = lines.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
   const locked = lines.some((line) => line.syncStatus === "tersinkron");
   return (
@@ -544,7 +545,7 @@ function OrderBody({
             <tr>
               <th className="py-2">SKU</th>
               <th>Qty</th>
-              <th>Harga</th>
+              <th>Unit Price</th>
               <th>Diskon</th>
               <th></th>
             </tr>

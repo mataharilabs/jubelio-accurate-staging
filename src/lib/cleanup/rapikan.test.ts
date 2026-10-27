@@ -42,8 +42,15 @@ describe("rapikan", () => {
 
     const gross = result.lines.reduce((sum, line) => sum + (line.hargaJual ?? 0), 0);
     const disc = result.lines.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
-    expect(Math.round(gross)).toBe(36365621);
+    expect(Math.round(gross)).toBe(35816279);
     expect(Math.round(disc)).toBe(10605775);
+
+    const single = result.lines.find((line) => line.noPesanan === "261026M7VRKFSD" && line.sku === "NTMKCL001L");
+    const bundle = result.lines.find((line) => line.noPesanan === "261026M2YTJ1YU" && line.sku === "40100083-01");
+    expect(single?.qty).toBe(2);
+    expect(single?.hargaJual).toBe(180000);
+    expect(bundle?.qty).toBe(8);
+    expect(bundle?.hargaJual).toBe(14500);
   });
 
   it("keeps bundle rows when the weight key is missing", () => {
@@ -119,7 +126,54 @@ describe("rapikan", () => {
     expect(result.lines[0].totalDiskon).toBe(500);
     expect(result.lines[1].isShopee).toBe(true);
     expect(result.lines[1].noPesanan).toBe("REF-SHOPEE");
-    expect(result.lines[1].hargaJual).toBe(18000);
+    expect(result.lines[1].hargaJual).toBe(18000 / 2);
     expect(result.lines[1].totalDiskon).toBe(250);
+  });
+
+  it("divides Shopee by the original package qty, including bundle rows", () => {
+    const weights = new Map([["40100083-40100083-01", 0.25]]);
+    const base: RawSalesRow = {
+      tanggal: "2026-10-26T00:00:00.000Z",
+      noPesanan: "SP-1",
+      ref: "261026M7VRKFSD",
+      channel: "SHOPEE",
+      namaToko: "Shopee",
+      namaBarang: "Nutrimax",
+      sku: "NTMKCL001L",
+      qty: 2,
+      hargaJual: 225000,
+      itemCodeBundle: null,
+      qtyBundle: 0,
+      lokasiGudang: "Lintas Sby",
+      status: "SHIPPED",
+      totalPenjualanPerProduk: 360000,
+      diskon: 0,
+      diskonLainnya: 0,
+      biayaLainnya: 0,
+    };
+    const result = rapikan(
+      [
+        base,
+        {
+          ...base,
+          ref: "261026M2YTJ1YU",
+          sku: "40100083",
+          itemCodeBundle: "40100083-01",
+          qtyBundle: 4,
+          hargaJual: 61900,
+          totalPenjualanPerProduk: 116000,
+        },
+      ],
+      weights,
+    );
+    expect(result.lines[0].isBundle).toBe(false);
+    expect(result.lines[0].qty).toBe(2);
+    expect(result.lines[0].hargaJual).toBe(180000);
+    expect(result.lines[1].isBundle).toBe(true);
+    expect(result.lines[1].qty).toBe(8);
+    expect(result.lines[1].sourceQty).toBe(2);
+    expect(result.lines[1].bobot).toBe(0.25);
+    expect(result.lines[1].hargaJual).toBe(14500);
+    expect(result.lines[1].totalDiskon).toBe(0);
   });
 });

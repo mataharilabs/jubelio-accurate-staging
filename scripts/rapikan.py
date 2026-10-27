@@ -12,7 +12,7 @@ shp=df['Channel'].str.upper().str.strip().eq('SHOPEE')
 ref=df['REF'].where(df['REF'].notna() & (df['REF'].str.strip()!=''), df['No Pesanan'])
 key=(df['SKU'].str.strip()+'-'+df['item_code_bundle'].fillna('').str.strip()).where(isb,'')
 w=key.map(bmap).where(isb,1.0)
-gross=(df['Total Penjualan Per Produk']*w).where(shp, df['Qty']*df['Harga Jual']*w)
+gross=(df['Total Penjualan Per Produk']*w/df['Qty']).where(shp, df['Qty']*df['Harga Jual']*w)
 disc=(df['Diskon Lainnya']*w).where(shp,(df['Diskon']+df['Diskon Lainnya']+df['Biaya Lainnya'])*w)
 out=pd.DataFrame({'No Pesanan':ref,'Channel':df['Channel'],'SKU':df['item_code_bundle'].where(isb, df['SKU']),
  'Qty':(df['qty_bundle']*df['Qty']).where(isb, df['Qty']).astype(int),

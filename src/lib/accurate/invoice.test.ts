@@ -63,16 +63,33 @@ describe("buildInvoice", () => {
     expect(draft.blockedReason).toMatch(/Bobot bundle tidak ada/);
   });
 
-  it("uses Shopee line gross divided by quantity as unitPrice", () => {
+  it("keeps Accurate unitPrice as the allocated line amount divided by output qty", () => {
     const draft = buildInvoice(
-      [line({ channel: "SHOPEE", isShopee: true, qty: 16, hargaJual: 17187.5, totalDiskon: 0, sku: "FLMFDX003LS", lokasiGudang: "Lintas Sby" })],
+      [line({ channel: "SHOPEE", isShopee: true, qty: 16, hargaJual: 17187.5, sourceQty: 1, totalDiskon: 0, sku: "FLMFDX003LS", lokasiGudang: "Lintas Sby" })],
       defaultSettings(),
       "2026-10-26",
     );
     expect(buildInvoice([line({ tanggal: "2026-10-26T19:34:29.000Z", channel: "SHOPEE" })], defaultSettings(), "2026-10-26").fields.transDate).toBe("26/10/2026");
     expect(draft.fields.customerNo).toBe("SHOPEE");
     expect(draft.fields["detailItem[0].unitPrice"]).toBe("1074.21875");
+    expect(draft.fields["detailItem[0].quantity"]).toBe("16");
     expect(draft.fields["detailItem[0].warehouseName"]).toBe("Gudang Lintas Surabaya");
     expect(draft.blockedReason).toBeNull();
+
+    const single = buildInvoice(
+      [line({ channel: "SHOPEE", isShopee: true, isBundle: false, qty: 2, sourceQty: 2, hargaJual: 180000, totalDiskon: 0, sku: "NTMKCL001L", lokasiGudang: "Lintas Sby" })],
+      defaultSettings(),
+      "2026-10-26",
+    );
+    expect(single.fields["detailItem[0].unitPrice"]).toBe("180000");
+    expect(single.fields["detailItem[0].quantity"]).toBe("2");
+
+    const bundle = buildInvoice(
+      [line({ channel: "SHOPEE", isShopee: true, isBundle: true, qty: 8, sourceQty: 2, sourceQtyBundle: 4, hargaJual: 14500, totalDiskon: 0, sku: "40100083-01", lokasiGudang: "Lintas Sby" })],
+      defaultSettings(),
+      "2026-10-26",
+    );
+    expect(bundle.fields["detailItem[0].unitPrice"]).toBe("3625");
+    expect(bundle.fields["detailItem[0].quantity"]).toBe("8");
   });
 });

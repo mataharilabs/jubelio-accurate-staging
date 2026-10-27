@@ -1,4 +1,4 @@
-import { recomputeAmounts } from "@/lib/cleanup/rapikan";
+import { lineAmount, recomputeAmounts } from "@/lib/cleanup/rapikan";
 import { AppError } from "@/lib/errors";
 import type { Batch, LinePatch, SalesLine } from "@/lib/db/types";
 
@@ -8,7 +8,7 @@ export function aggregateBatch(batch: Batch, lines: SalesLine[]): Batch {
   let discount = 0;
   let missing = 0;
   for (const line of lines) {
-    if (line.hargaJual != null) gross += line.hargaJual;
+    gross += lineAmount(line);
     if (line.totalDiskon != null) discount += line.totalDiskon;
     if (line.missingWeight) missing += 1;
     if (!orders.has(line.noPesanan)) orders.set(line.noPesanan, line.syncStatus);
@@ -51,7 +51,7 @@ export function applyLinePatch(line: SalesLine, patch: LinePatch, siblings: Sale
     next.qty = patch.qty;
   }
   if (patch.hargaJual != null) {
-    if (!Number.isFinite(patch.hargaJual)) throw new AppError("Harga jual tidak valid.");
+    if (!Number.isFinite(patch.hargaJual)) throw new AppError("Unit Price tidak valid.");
     next.hargaJual = patch.hargaJual;
   }
   if (patch.totalDiskon != null) {

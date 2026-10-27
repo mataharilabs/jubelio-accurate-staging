@@ -1,3 +1,4 @@
+import { lineAmount } from "@/lib/cleanup/rapikan";
 import { accurateDate, formatDecimal } from "@/lib/format";
 import type { AppSettings, SalesLine } from "@/lib/db/types";
 
@@ -61,9 +62,16 @@ export function invoiceUrl(host: string): string {
 
 /**
  * One Accurate sales invoice for one Jubelio order.
- * Harga Jual on the staging row is the gross line amount, so unitPrice = Harga Jual / Qty.
+ * detailItem[n].unitPrice stays the price per output Qty (the expanded line quantity).
+ * Non-Shopee Unit Price is the line amount, so unitPrice = Unit Price / Qty.
+ * Shopee Unit Price is per original package, so unitPrice = Unit Price × package Qty / output Qty.
  * itemCashDiscount is the line discount (Total Diskon), matching Accurate's line cash discount.
  */
+export function accurateUnitPrice(line: SalesLine): number {
+  if (!(line.qty > 0) || line.hargaJual == null) return 0;
+  return lineAmount(line) / line.qty;
+}
+
 export function buildInvoice(
   lines: SalesLine[],
   settings: AppSettings,
@@ -109,7 +117,7 @@ export function buildInvoice(
 
   lines.forEach((line, index) => {
     const location = resolveLocation(line.lokasiGudang, settings);
-    const unitPrice = line.qty > 0 && line.hargaJual != null ? line.hargaJual / line.qty : 0;
+    const unitPrice = accurateUnitPrice(line);
     fields[`detailItem[${index}].itemNo`] = line.sku;
     fields[`detailItem[${index}].quantity`] = formatDecimal(line.qty, 4);
     fields[`detailItem[${index}].unitPrice`] = formatDecimal(unitPrice);
@@ -117,7 +125,7 @@ export function buildInvoice(
     if (location?.warehouseName) fields[`detailItem[${index}].warehouseName`] = location.warehouseName;
   });
 
-  const gross = lines.reduce((sum, line) => sum + (line.hargaJual ?? 0), 0);
+  const gross = lines.reduce((sum, line) => sum + lineAmount(line), 0);
   const discount = lines.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
   const uniqueReasons = [...new Set(reasons)];
   return {

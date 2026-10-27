@@ -10,7 +10,7 @@ function sheet(lines: SalesLine[]) {
     Channel: line.channel,
     SKU: line.sku,
     Qty: line.qty,
-    "Harga Jual": line.hargaJual,
+    "Unit Price": line.hargaJual,
     "Total Diskon": line.totalDiskon,
   }));
   const context = lines.map((line) => ({
