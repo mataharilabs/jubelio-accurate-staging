@@ -43,7 +43,7 @@ describe("rapikan", () => {
     const gross = result.lines.reduce((sum, line) => sum + (line.hargaJual ?? 0), 0);
     const disc = result.lines.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
     expect(Math.round(gross)).toBe(35816279);
-    expect(Math.round(disc)).toBe(10605775);
+    expect(Math.round(disc)).toBe(10593550);
 
     const single = result.lines.find((line) => line.noPesanan === "261026M7VRKFSD" && line.sku === "NTMKCL001L");
     const bundle = result.lines.find((line) => line.noPesanan === "261026M2YTJ1YU" && line.sku === "40100083-01");
@@ -123,11 +123,11 @@ describe("rapikan", () => {
     expect(result.lines[0].bobot).toBe(1);
     expect(result.lines[0].qty).toBe(3);
     expect(result.lines[0].hargaJual).toBe(3 * 15000);
-    expect(result.lines[0].totalDiskon).toBe(500);
+    expect(result.lines[0].totalDiskon).toBe(500 / 3);
     expect(result.lines[1].isShopee).toBe(true);
     expect(result.lines[1].noPesanan).toBe("REF-SHOPEE");
     expect(result.lines[1].hargaJual).toBe(18000 / 2);
-    expect(result.lines[1].totalDiskon).toBe(250);
+    expect(result.lines[1].totalDiskon).toBe(250 / 2);
   });
 
   it("divides Shopee by the original package qty, including bundle rows", () => {

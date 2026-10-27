@@ -13,10 +13,10 @@ ref=df['REF'].where(df['REF'].notna() & (df['REF'].str.strip()!=''), df['No Pesa
 key=(df['SKU'].str.strip()+'-'+df['item_code_bundle'].fillna('').str.strip()).where(isb,'')
 w=key.map(bmap).where(isb,1.0)
 gross=(df['Total Penjualan Per Produk']*w/df['Qty']).where(shp, df['Qty']*df['Harga Jual']*w)
-disc=(df['Diskon Lainnya']*w).where(shp,(df['Diskon']+df['Diskon Lainnya']+df['Biaya Lainnya'])*w)
+disc=((df['Diskon Lainnya']*w).where(shp,(df['Diskon']+df['Diskon Lainnya']+df['Biaya Lainnya'])*w))/df['Qty']
 out=pd.DataFrame({'No Pesanan':ref,'Channel':df['Channel'],'SKU':df['item_code_bundle'].where(isb, df['SKU']),
  'Qty':(df['qty_bundle']*df['Qty']).where(isb, df['Qty']).astype(int),
- 'Harga Jual':gross,'Total Diskon':disc})
+ 'Unit Price':gross,'Total Diskon':disc})
 miss=key[isb & w.isna()]
 with pd.ExcelWriter(fn, engine='openpyxl') as x:
   out.to_excel(x,index=False,sheet_name='Data'); ws=x.sheets['Data']

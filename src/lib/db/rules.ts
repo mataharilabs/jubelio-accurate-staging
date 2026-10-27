@@ -1,4 +1,4 @@
-import { lineAmount, recomputeAmounts } from "@/lib/cleanup/rapikan";
+import { lineAmount, lineDiscount, recomputeAmounts } from "@/lib/cleanup/rapikan";
 import { AppError } from "@/lib/errors";
 import type { Batch, LinePatch, SalesLine } from "@/lib/db/types";
 
@@ -9,7 +9,7 @@ export function aggregateBatch(batch: Batch, lines: SalesLine[]): Batch {
   let missing = 0;
   for (const line of lines) {
     gross += lineAmount(line);
-    if (line.totalDiskon != null) discount += line.totalDiskon;
+    discount += lineDiscount(line);
     if (line.missingWeight) missing += 1;
     if (!orders.has(line.noPesanan)) orders.set(line.noPesanan, line.syncStatus);
   }

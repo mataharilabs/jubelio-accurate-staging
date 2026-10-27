@@ -117,6 +117,12 @@ export function shopeeUnitPrice(totalPenjualanPerProduk: number, bobot: number, 
   return (totalPenjualanPerProduk * bobot) / packageQty;
 }
 
+/** Total Diskon is per original package. A zero package count is stored as 0. */
+export function perPackageDiscount(lineDiscount: number, packageQty: number): number {
+  if (!(packageQty > 0)) return 0;
+  return lineDiscount / packageQty;
+}
+
 /**
  * Allocated amount of the line before discount.
  * Non-Shopee Unit Price is already that amount. Shopee Unit Price is per package,
@@ -130,6 +136,12 @@ export function lineAmount(line: {
   if (line.hargaJual == null) return 0;
   if (!line.isShopee) return line.hargaJual;
   return line.sourceQty > 0 ? line.hargaJual * line.sourceQty : 0;
+}
+
+/** Allocated line discount. Total Diskon is per package for every channel. */
+export function lineDiscount(line: { totalDiskon: number | null; sourceQty: number }): number {
+  if (line.totalDiskon == null || !(line.sourceQty > 0)) return 0;
+  return line.totalDiskon * line.sourceQty;
 }
 
 export function bundleKeyOf(sku: string | null, itemCodeBundle: string | null): string | null {
@@ -158,10 +170,10 @@ export function cleanRow(row: RawSalesRow, weights: Map<string, number>): CleanL
     totalDiskon = null;
   } else if (shopee) {
     hargaJual = shopeeUnitPrice(num(row.totalPenjualanPerProduk), bobot, num(row.qty));
-    totalDiskon = num(row.diskonLainnya) * bobot;
+    totalDiskon = perPackageDiscount(num(row.diskonLainnya) * bobot, num(row.qty));
   } else {
     hargaJual = num(row.qty) * num(row.hargaJual) * bobot;
-    totalDiskon = (num(row.diskon) + num(row.diskonLainnya) + num(row.biayaLainnya)) * bobot;
+    totalDiskon = perPackageDiscount((num(row.diskon) + num(row.diskonLainnya) + num(row.biayaLainnya)) * bobot, num(row.qty));
   }
 
   const ref = text(row.ref);
@@ -230,7 +242,7 @@ export function recomputeAmounts(line: {
     return {
       qty,
       hargaJual: shopeeUnitPrice(line.sourceTotalPenjualan, bobot, line.sourceQty),
-      totalDiskon: line.sourceDiskonLainnya * bobot,
+      totalDiskon: perPackageDiscount(line.sourceDiskonLainnya * bobot, line.sourceQty),
       bobot,
       missingWeight: false,
     };
@@ -238,7 +250,7 @@ export function recomputeAmounts(line: {
   return {
     qty,
     hargaJual: line.sourceQty * line.sourceHarga * bobot,
-    totalDiskon: (line.sourceDiskon + line.sourceDiskonLainnya + line.sourceBiayaLainnya) * bobot,
+    totalDiskon: perPackageDiscount((line.sourceDiskon + line.sourceDiskonLainnya + line.sourceBiayaLainnya) * bobot, line.sourceQty),
     bobot,
     missingWeight: false,
   };

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { api } from "@/lib/api-client";
-import { lineAmount } from "@/lib/cleanup/rapikan";
+import { lineAmount, lineDiscount } from "@/lib/cleanup/rapikan";
 import { formatDateTime, formatDay, formatDecimal, formatNumber, formatRp, SYNC_LABEL } from "@/lib/format";
 import type { Batch, LinePatch, OrderSync, SalesLine, SyncStatus } from "@/lib/db/types";
 import type { OrderPreview } from "@/lib/sync-types";
@@ -90,7 +90,7 @@ export function BatchWorkspace({ batchId }: { batchId: string }) {
 
   const totals = useMemo(() => {
     const gross = filtered.reduce((sum, line) => sum + lineAmount(line), 0);
-    const discount = filtered.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
+    const discount = filtered.reduce((sum, line) => sum + lineDiscount(line), 0);
     const orders = new Set(filtered.map((line) => line.noPesanan)).size;
     const missing = filtered.filter((line) => line.missingWeight).length;
     return { gross, discount, orders, missing };
@@ -395,7 +395,7 @@ export function BatchWorkspace({ batchId }: { batchId: string }) {
                   {busy ? "Mengirim…" : `Sync ke Accurate (${preview.filter((item) => !item.blockedReason && !item.skippedReason).length} siap)`}
                 </Button>
               </div>
-              <p className="mt-2 text-xs text-muted">Tanpa token Accurate, pengiriman ditolak dan status tidak menjadi tersinkron. Accurate unitPrice tetap harga per Qty baris. Shopee: Unit Price × Qty paket ÷ Qty. Selain Shopee: Unit Price ÷ Qty. itemCashDiscount = Total Diskon baris.</p>
+              <p className="mt-2 text-xs text-muted">Tanpa token Accurate, pengiriman ditolak dan status tidak menjadi tersinkron. Accurate unitPrice tetap harga per Qty baris. Shopee: Unit Price × Qty paket ÷ Qty. Selain Shopee: Unit Price ÷ Qty. Total Diskon adalah diskon per Qty paket; itemCashDiscount = Total Diskon × Qty paket.</p>
             </div>
           </div>
         ) : null}
@@ -528,7 +528,7 @@ function OrderBody({
   onReset: () => Promise<void>;
 }) {
   const gross = lines.reduce((sum, line) => sum + lineAmount(line), 0);
-  const discount = lines.reduce((sum, line) => sum + (line.totalDiskon ?? 0), 0);
+  const discount = lines.reduce((sum, line) => sum + lineDiscount(line), 0);
   const locked = lines.some((line) => line.syncStatus === "tersinkron");
   return (
     <div>

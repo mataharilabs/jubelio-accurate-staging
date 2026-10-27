@@ -91,5 +91,13 @@ describe("buildInvoice", () => {
     );
     expect(bundle.fields["detailItem[0].unitPrice"]).toBe("3625");
     expect(bundle.fields["detailItem[0].quantity"]).toBe("8");
+
+    const perPackage = buildInvoice(
+      [line({ qty: 3, sourceQty: 3, isBundle: false, hargaJual: 45000, totalDiskon: 500 / 3, sku: "SKU-1" })],
+      defaultSettings(),
+      "2026-10-26",
+    );
+    expect(perPackage.fields["detailItem[0].unitPrice"]).toBe("15000");
+    expect(perPackage.fields["detailItem[0].itemCashDiscount"]).toBe(String(500));
   });
 });
