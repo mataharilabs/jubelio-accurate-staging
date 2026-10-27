@@ -1,0 +1,32 @@
+export function appUrl(): string {
+  return (process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3847").replace(/\/$/, "");
+}
+
+export function supabaseConfigured(): boolean {
+  return Boolean(
+    process.env.SUPABASE_URL &&
+      process.env.SUPABASE_ANON_KEY &&
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+  );
+}
+
+export function accurateEnv() {
+  return {
+    clientId: process.env.ACCURATE_CLIENT_ID?.trim() ?? "",
+    clientSecret: process.env.ACCURATE_CLIENT_SECRET?.trim() ?? "",
+    redirectUri: (process.env.ACCURATE_REDIRECT_URI || `${appUrl()}/api/accurate/callback`).trim(),
+    databaseId: process.env.ACCURATE_DATABASE_ID?.trim() ?? "",
+  };
+}
+
+export function accurateConfigured(): boolean {
+  const env = accurateEnv();
+  return Boolean(env.clientId && env.clientSecret);
+}
+
+export function missingAccurateEnv(): string[] {
+  const missing: string[] = [];
+  if (!process.env.ACCURATE_CLIENT_ID?.trim()) missing.push("ACCURATE_CLIENT_ID");
+  if (!process.env.ACCURATE_CLIENT_SECRET?.trim()) missing.push("ACCURATE_CLIENT_SECRET");
+  return missing;
+}
