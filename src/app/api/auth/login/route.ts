@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
-import { supabaseConfigured } from "@/lib/env";
+import { supabaseAnonKey, supabaseConfigured, supabaseUrl } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { fail } from "@/lib/http";
 
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
 
     let mode: "demo" | "supabase" = "demo";
     if (supabaseConfigured()) {
-      const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
+      const supabase = createClient(supabaseUrl(), supabaseAnonKey(), {
         auth: { persistSession: false, autoRefreshToken: false },
       });
       const { error } = await supabase.auth.signInWithPassword({ email, password });

@@ -27,6 +27,6 @@ export async function readUpload(request: Request, field = "file"): Promise<{ na
   const file = form.get(field);
   if (!(file instanceof File)) throw new AppError("Pilih berkas .xlsx.");
   if (!file.name.toLowerCase().endsWith(".xlsx")) throw new AppError("Hanya berkas .xlsx yang didukung.");
-  if (file.size > 10 * 1024 * 1024) throw new AppError("Berkas lebih besar dari 10 MB.");
+  if (file.size > 20 * 1024 * 1024) throw new AppError("Berkas lebih besar dari 20 MB.");
   return { name: file.name, buffer: Buffer.from(await file.arrayBuffer()) };
 }

@@ -1,4 +1,4 @@
-import { encodeBody, invoiceUrl, type InvoiceDraft } from "@/lib/accurate/invoice";
+import { deleteInvoiceUrl, encodeBody, invoiceUrl, type InvoiceDraft } from "@/lib/accurate/invoice";
 import type { AccurateTokens } from "@/lib/db/types";
 import { accurateEnv } from "@/lib/env";
 import { AppError } from "@/lib/errors";
@@ -158,6 +158,24 @@ export async function saveSalesInvoice(
   const number = json.r?.no || json.r?.number || null;
   const id = json.r?.id == null ? null : String(json.r.id);
   return { accurateId: id, accurateNumber: number, response: json };
+}
+
+export async function deleteSalesInvoice(
+  accessToken: string,
+  host: string,
+  session: string,
+  accurateId: string,
+): Promise<{ response: AccurateEnvelope }> {
+  const response = await postForm(deleteInvoiceUrl(host), new URLSearchParams({ id: accurateId }), {
+    Authorization: `Bearer ${accessToken}`,
+    "X-Session-ID": session,
+  });
+  const json = (await response.json().catch(() => ({}))) as AccurateEnvelope;
+  if (!response.ok || json.s === false) {
+    const detail = Array.isArray(json.d) ? json.d.map(String).join(" ") : `Accurate menolak penghapusan faktur (${response.status}).`;
+    throw new AppError(detail || "Accurate menolak penghapusan faktur.");
+  }
+  return { response: json };
 }
 
 export function draftWithHost(draft: InvoiceDraft, host: string, sessionReady: boolean): InvoiceDraft {
