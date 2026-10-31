@@ -1,389 +1,531 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
-import { aggregateBatch, applyLinePatch, withWeights } from "@/lib/db/rules";
-import type { DataStore, OrderSyncInput } from "@/lib/db/store";
+import { planCancels, planImport } from "@/lib/domain/plan";
+import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
+import { reportOf } from "@/lib/domain/aggregate";
+import { reviewRow } from "@/lib/domain/review-rows";
+import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
 import type {
   AccurateTokens,
+  AppMeta,
   AppSettings,
-  Batch,
   BundleWeight,
-  CreateBatchInput,
-  DashboardStats,
-  LinePatch,
-  OrderSync,
-  SalesLine,
+  ChannelMapRow,
+  CityMapRow,
+  DashboardQuery,
+  DashboardReport,
+  FieldChange,
+  FilterOptions,
+  ImportRecord,
+  ImportResult,
+  OrderPage,
+  OrderQuery,
+  OrderVersion,
+  ProvinceMapRow,
+  ReviewItem,
+  SyncBatch,
+  SyncBatchItem,
+  SyncReviewRow,
+  SyncState,
 } from "@/lib/db/types";
+import { accurateConfigured } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 
 type LocalDB = {
-  version: 1;
+  version: 2;
+  imports: ImportRecord[];
+  versions: OrderVersion[];
+  changes: FieldChange[];
+  syncStates: SyncState[];
+  syncBatches: SyncBatch[];
+  syncItems: SyncBatchItem[];
   weights: BundleWeight[];
-  batches: Batch[];
-  lines: SalesLine[];
-  syncs: OrderSync[];
+  channels: ChannelMapRow[];
+  provinces: ProvinceMapRow[];
+  cities: CityMapRow[];
+  reviews: ReviewItem[];
   settings: AppSettings;
   tokens: AccurateTokens | null;
 };
 
+const FILE = path.join(process.cwd(), "data", "store-v2.json");
+
 function emptyDb(): LocalDB {
   return {
-    version: 1,
+    version: 2,
+    imports: [],
+    versions: [],
+    changes: [],
+    syncStates: [],
+    syncBatches: [],
+    syncItems: [],
     weights: [],
-    batches: [],
-    lines: [],
-    syncs: [],
+    channels: [],
+    provinces: [],
+    cities: [],
+    reviews: [],
     settings: sanitizeSettings(null),
     tokens: null,
   };
 }
 
-export function localDbPath(): string {
-  if (process.env.VERCEL) return "/tmp/jubelio-local-db.json";
-  return path.join(process.cwd(), "data", "local-db.json");
+function load(): LocalDB {
+  try {
+    const parsed = JSON.parse(readFileSync(FILE, "utf8")) as LocalDB;
+    if (parsed.version !== 2) return emptyDb();
+    parsed.settings = sanitizeSettings(parsed.settings);
+    return parsed;
+  } catch {
+    return emptyDb();
+  }
+}
+
+function save(db: LocalDB) {
+  mkdirSync(path.dirname(FILE), { recursive: true });
+  writeFileSync(FILE, JSON.stringify(db));
+}
+
+function currentMap(db: LocalDB): Map<string, OrderVersion> {
+  const map = new Map<string, OrderVersion>();
+  for (const version of db.versions) if (version.isCurrent) map.set(version.noPesanan, version);
+  return map;
+}
+
+function addReviews(db: LocalDB, items: Omit<ReviewItem, "id" | "status">[]) {
+  for (const item of items) {
+    const existing = db.reviews.find((row) => row.kind === item.kind && row.rawKey === item.rawKey);
+    if (existing) {
+      if (existing.status === "resolved") continue;
+      existing.detail = item.detail;
+      continue;
+    }
+    db.reviews.push({ ...item, id: crypto.randomUUID(), status: "open" });
+  }
 }
 
 export class LocalStore implements DataStore {
   mode = "local" as const;
-  ephemeral = Boolean(process.env.VERCEL);
-  private chain: Promise<unknown> = Promise.resolve();
+  ephemeral = false;
+  private db: LocalDB;
 
-  private async withDb<T>(fn: (db: LocalDB) => T | Promise<T>): Promise<T> {
-    const run = this.chain.then(async () => {
-      const db = this.read();
-      const result = await fn(db);
-      this.write(db);
-      return result;
-    });
-    this.chain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+  constructor() {
+    this.db = load();
   }
 
-  private read(): LocalDB {
-    const file = localDbPath();
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as LocalDB;
-      parsed.settings = sanitizeSettings(parsed.settings);
-      parsed.weights ??= [];
-      parsed.batches ??= [];
-      parsed.lines ??= [];
-      parsed.syncs ??= [];
-      parsed.tokens ??= null;
-      return parsed;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return emptyDb();
-      throw new AppError("Berkas data lokal rusak. Hapus data/local-db.json lalu muat ulang.");
+  private persist() {
+    save(this.db);
+  }
+
+  async ensureSeeded(): Promise<void> {
+    const { seedReferenceData, seedSampleSales } = await import("@/lib/sample-data");
+    if (!this.db.weights.length || !this.db.channels.length) await seedReferenceData(this);
+    if (!this.db.versions.length) await seedSampleSales(this);
+  }
+
+  async meta(): Promise<AppMeta> {
+    const current = this.db.versions.filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete");
+    const last = [...this.db.imports].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    return {
+      mode: this.mode,
+      ephemeral: false,
+      lastImportAt: last?.createdAt ?? null,
+      orderCount: current.length,
+      lineCount: current.reduce((sum, version) => sum + version.lines.length, 0),
+      openReviews: this.db.reviews.filter((row) => row.status === "open").length,
+      accurateConnected: Boolean(this.db.tokens?.accessToken),
+      accurateConfigured: accurateConfigured(),
+      accurateUser: this.db.tokens?.userEmail ?? null,
+    };
+  }
+
+  async dashboard(query: DashboardQuery): Promise<DashboardReport> {
+    return reportOf(this.db.versions, query);
+  }
+
+  async filterOptions(): Promise<FilterOptions> {
+    const versions = this.db.versions.filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete");
+    const uniq = (values: string[]) => [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "id"));
+    const days = versions.map((version) => version.day).filter(Boolean).sort();
+    return {
+      channels: uniq(versions.map((version) => version.channel)),
+      stores: uniq(versions.map((version) => version.storeName)),
+      provinces: uniq(versions.map((version) => version.province)),
+      cities: uniq(versions.map((version) => version.city)),
+      statuses: uniq(versions.map((version) => version.status)),
+      couriers: uniq(versions.map((version) => version.kurir)),
+      skus: uniq(versions.flatMap((version) => version.lines.map((line) => line.sku))),
+      minDay: days[0] ?? null,
+      maxDay: days.at(-1) ?? null,
+    };
+  }
+
+  async listOrders(query: OrderQuery): Promise<OrderPage> {
+    const q = query.q.trim().toLowerCase();
+    const rows = this.db.versions
+      .filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete")
+      .flatMap((version) => version.lines.map((line) => ({ version, line })))
+      .filter(({ version, line }) => {
+        if (query.day && version.day !== query.day) return false;
+        if (!q) return true;
+        const hay = [version.noPesanan, line.sku, line.productName, version.customerName, version.storeName, version.city, version.channel].join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+    const pageSize = query.pageSize || 30;
+    const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+    const page = Math.min(query.page, pages - 1);
+    const slice = rows.slice(page * pageSize, page * pageSize + pageSize);
+    return {
+      total: rows.length,
+      orders: new Set(rows.map((row) => row.version.noPesanan)).size,
+      page,
+      pages,
+      rows: slice.map(({ version, line }) => ({
+        lineId: line.id,
+        versionId: version.id,
+        noPesanan: version.noPesanan,
+        tanggal: version.tanggal,
+        day: version.day,
+        channel: version.channel,
+        storeName: version.storeName,
+        sku: line.sku,
+        productName: line.productName,
+        qty: line.qty,
+        unitPrice: line.unitPrice,
+        subTotal: line.subTotal,
+        totalNilaiPesanan: version.totalNilaiPesanan,
+        totalDiskon: version.totalDiskon,
+        unitDiskon: line.unitDiskon,
+        revenuePerUnit: line.revenuePerUnit,
+        customerName: version.customerName,
+        customerCode: version.customerCode,
+        province: version.province,
+        city: version.city,
+        kurir: version.kurir,
+        status: version.status,
+        flags: line.flags,
+      })),
+    };
+  }
+
+  private commitPlan(plan: ReturnType<typeof planImport>, record: ImportRecord | null) {
+    for (const id of plan.retireIds) {
+      const version = this.db.versions.find((row) => row.id === id);
+      if (version) version.isCurrent = false;
     }
+    this.db.versions.push(...plan.versions);
+    this.db.changes.push(...plan.changes);
+    addReviews(this.db, plan.reviews);
+    if (record) this.db.imports.push(record);
+    this.persist();
   }
 
-  private write(db: LocalDB) {
-    const file = localDbPath();
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(db));
+  async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null): Promise<ImportResult> {
+    return this.importLines(lines, [], filename, source, by, { from: null, to: null });
   }
 
-  private touch(db: LocalDB, batchId: string) {
-    const batch = db.batches.find((row) => row.id === batchId);
-    if (!batch) return;
-    const lines = db.lines.filter((row) => row.batchId === batchId);
-    const next = aggregateBatch(batch, lines);
-    Object.assign(batch, next);
+  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }): Promise<ImportResult> {
+    return this.importLines(lines, cancels, filename, "raw", by, range);
   }
 
-  dashboard(): Promise<{ batches: Batch[]; stats: DashboardStats }> {
-    return this.withDb((db) => {
-      const batches = [...db.batches].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      const stats: DashboardStats = {
-        batchCount: batches.length,
-        lineCount: batches.reduce((sum, batch) => sum + batch.rowCount, 0),
-        grossTotal: batches.reduce((sum, batch) => sum + batch.grossTotal, 0),
-        discountTotal: batches.reduce((sum, batch) => sum + batch.discountTotal, 0),
-        unsyncedOrders: batches.reduce((sum, batch) => sum + batch.unsyncedCount, 0),
-        missingWeights: batches.reduce((sum, batch) => sum + batch.missingWeightCount, 0),
-        weightCount: db.weights.length,
-      };
-      return { batches, stats };
-    });
+  private async importLines(
+    lines: CleanLine[],
+    cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[],
+    filename: string,
+    source: ImportRecord["source"],
+    by: string | null,
+    range: { from: string | null; to: string | null },
+  ): Promise<ImportResult> {
+    const createdAt = new Date().toISOString();
+    const importId = crypto.randomUUID();
+    const current = currentMap(this.db);
+    const plan = planImport(current, lines, { importId, source: source === "raw" ? "import_raw" : "import_clean", createdAt, createdBy: by });
+    const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
+    const versions = [...plan.versions, ...cancelPlan.versions];
+    const record: ImportRecord = {
+      id: importId,
+      filename,
+      source,
+      createdAt,
+      createdBy: by,
+      orderCount: new Set(lines.map((line) => line.noPesanan)).size,
+      lineCount: lines.length,
+      newVersions: versions.length,
+      unchanged: plan.unchanged,
+      fromDay: range.from,
+      toDay: range.to,
+    };
+    this.commitPlan({
+      versions,
+      changes: [...plan.changes, ...cancelPlan.changes],
+      retireIds: [...plan.retireIds, ...cancelPlan.retireIds],
+      reviews: [...plan.reviews, ...cancelPlan.reviews],
+      unchanged: plan.unchanged,
+    }, record);
+    return {
+      importId,
+      orders: record.orderCount,
+      lines: lines.length,
+      newVersions: versions.length,
+      unchanged: plan.unchanged,
+      dropped: cancels.length,
+      reviews: plan.reviews.length,
+    };
   }
 
-  getBatchBundle(id: string) {
-    return this.withDb((db) => {
-      const batch = db.batches.find((row) => row.id === id);
-      if (!batch) return null;
-      const lines = db.lines
-        .filter((row) => row.batchId === id)
-        .sort((a, b) => a.rowIndex - b.rowIndex);
-      const syncs = db.syncs.filter((row) => row.batchId === id);
-      return { batch, lines, syncs };
-    });
+  private replaceCurrent(previous: OrderVersion, next: OrderVersion) {
+    previous.isCurrent = false;
+    this.db.versions.push(next);
+    this.db.changes.push(...diffVersions(previous, next));
+    const state = this.db.syncStates.find((row) => row.noPesanan === next.noPesanan);
+    if (state && state.decisionVersionId !== next.id) {
+      state.decision = null;
+      state.decisionVersionId = null;
+    }
+    this.persist();
   }
 
-  createBatch(input: CreateBatchInput) {
-    return this.withDb((db) => {
-      const id = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const lines: SalesLine[] = input.lines.map((line) => ({
-        ...line,
+  async editLine(noPesanan: string, lineId: string, patch: { sku?: string; qty?: number; unitPrice?: number; city?: string }, by: string): Promise<void> {
+    const previous = currentMap(this.db).get(noPesanan);
+    if (!previous) throw new AppError("Pesanan tidak ditemukan.");
+    if (!previous.lines.some((line) => line.id === lineId)) throw new AppError("Baris tidak ditemukan.");
+    const lines = applyLineEdit(previous, lineId, patch);
+    const next: OrderVersion = {
+      ...previous,
+      id: crypto.randomUUID(),
+      versionNo: previous.versionNo + 1,
+      importId: null,
+      source: "manual_edit",
+      createdAt: new Date().toISOString(),
+      createdBy: by,
+      isCurrent: true,
+      city: patch.city != null ? patch.city : previous.city,
+      lines,
+      qty: lines.reduce((sum, line) => sum + line.qty, 0),
+      revenue: orderRevenue(lines),
+      totalNilaiPesanan: lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0),
+      totalDiskon: previous.totalDiskon,
+    };
+    if (!diffVersions(previous, next).length) throw new AppError("Tidak ada perubahan.");
+    this.replaceCurrent(previous, next);
+  }
+
+  async deleteLine(noPesanan: string, lineId: string, by: string): Promise<void> {
+    const previous = currentMap(this.db).get(noPesanan);
+    if (!previous) throw new AppError("Pesanan tidak ditemukan.");
+    const kept = previous.lines.filter((line) => line.id !== lineId);
+    if (kept.length === previous.lines.length) throw new AppError("Baris tidak ditemukan.");
+    const lines = kept.length ? applyLineEdit({ ...previous, lines: kept }, kept[0].id, {}) : [];
+    const next: OrderVersion = {
+      ...previous,
+      id: crypto.randomUUID(),
+      versionNo: previous.versionNo + 1,
+      importId: null,
+      source: lines.length ? "manual_edit" : "manual_delete",
+      createdAt: new Date().toISOString(),
+      createdBy: by,
+      isCurrent: true,
+      lines,
+      qty: lines.reduce((sum, line) => sum + line.qty, 0),
+      revenue: orderRevenue(lines),
+      totalNilaiPesanan: lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0),
+      totalDiskon: previous.totalDiskon,
+    };
+    this.replaceCurrent(previous, next);
+  }
+
+  async syncReview(days: string[]): Promise<SyncReviewRow[]> {
+    const wanted = new Set(days);
+    const rows: SyncReviewRow[] = [];
+    for (const version of this.db.versions) {
+      if (!version.isCurrent) continue;
+      if (wanted.size && !wanted.has(version.day)) continue;
+      const state = this.db.syncStates.find((row) => row.noPesanan === version.noPesanan) ?? null;
+      const synced = state?.lastSyncedVersionId ? this.db.versions.find((row) => row.id === state.lastSyncedVersionId) ?? null : null;
+      const row = reviewRow(version, synced, state);
+      if (row) rows.push(row);
+    }
+    return rows.sort((a, b) => b.day.localeCompare(a.day) || a.noPesanan.localeCompare(b.noPesanan));
+  }
+
+  async prepareSync(nos: string[]): Promise<PreparedSync[]> {
+    const review = await this.syncReview([]);
+    const wanted = new Set(nos);
+    return review.filter((row) => wanted.has(row.noPesanan)).map((row) => ({
+      row,
+      state: this.db.syncStates.find((item) => item.noPesanan === row.noPesanan) ?? null,
+    }));
+  }
+
+  async setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void> {
+    const version = currentMap(this.db).get(noPesanan);
+    if (!version) throw new AppError("Pesanan tidak ditemukan.");
+    const now = new Date().toISOString();
+    const existing = this.db.syncStates.find((row) => row.noPesanan === noPesanan);
+    if (existing) {
+      existing.decision = decision;
+      existing.decisionVersionId = version.id;
+      existing.updatedAt = now;
+    } else {
+      this.db.syncStates.push({
+        noPesanan,
+        lastSyncedVersionId: null,
+        accurateId: null,
+        accurateNumber: null,
+        lastSyncStatus: null,
+        decision,
+        decisionVersionId: version.id,
+        updatedAt: now,
+      });
+    }
+    void by;
+    this.persist();
+  }
+
+  async recordSync(by: string, items: SyncWrite[], note: string): Promise<SyncBatch> {
+    const batch: SyncBatch = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      createdBy: by,
+      orderCount: items.length,
+      successCount: items.filter((item) => item.status === "berhasil").length,
+      failCount: items.filter((item) => item.status === "gagal").length,
+      totalNilai: 0,
+      revenue: 0,
+      note,
+    };
+    for (const item of items) {
+      const version = this.db.versions.find((row) => row.id === item.versionId);
+      if (item.status === "berhasil" && version) {
+        batch.totalNilai += version.totalNilaiPesanan ?? 0;
+        batch.revenue += version.revenue ?? 0;
+      }
+      this.db.syncItems.push({
         id: crypto.randomUUID(),
-        batchId: id,
-        syncStatus: "belum",
-      }));
-      const batch = aggregateBatch(
-        {
-          id,
-          reportDate: input.reportDate,
-          filename: input.filename,
-          rowCount: 0,
-          droppedCount: input.droppedCount,
-          missingWeightCount: 0,
-          grossTotal: 0,
-          discountTotal: 0,
-          orderCount: 0,
-          unsyncedCount: 0,
-          createdAt: now,
-          createdBy: input.createdBy,
-        },
-        lines,
-      );
-      db.batches.push(batch);
-      db.lines.push(...lines);
-      return batch;
-    });
+        batchId: batch.id,
+        noPesanan: item.noPesanan,
+        versionId: item.versionId,
+        category: item.category,
+        action: item.action,
+        status: item.status,
+        accurateId: item.accurateId,
+        accurateNumber: item.accurateNumber,
+        error: item.error,
+        createdAt: batch.createdAt,
+      });
+      if (item.status !== "berhasil") continue;
+      const state = this.db.syncStates.find((row) => row.noPesanan === item.noPesanan);
+      const next: SyncState = {
+        noPesanan: item.noPesanan,
+        lastSyncedVersionId: item.action === "delete" ? state?.lastSyncedVersionId ?? item.versionId : item.versionId,
+        accurateId: item.action === "delete" ? null : item.accurateId,
+        accurateNumber: item.action === "delete" ? null : item.accurateNumber,
+        lastSyncStatus: item.action === "delete" ? "void" : "tersinkron",
+        decision: null,
+        decisionVersionId: null,
+        updatedAt: batch.createdAt,
+      };
+      if (state) Object.assign(state, next);
+      else this.db.syncStates.push(next);
+    }
+    this.db.syncBatches.unshift(batch);
+    this.persist();
+    return batch;
   }
 
-  deleteBatch(id: string) {
-    return this.withDb((db) => {
-      db.batches = db.batches.filter((row) => row.id !== id);
-      db.lines = db.lines.filter((row) => row.batchId !== id);
-      db.syncs = db.syncs.filter((row) => row.batchId !== id);
-    });
+  async syncHistory() {
+    return { batches: this.db.syncBatches, items: this.db.syncItems };
   }
 
-  updateLine(id: string, patch: LinePatch) {
-    return this.withDb((db) => {
-      const line = db.lines.find((row) => row.id === id);
-      if (!line) throw new AppError("Baris tidak ditemukan.", 404);
-      const previous = line.noPesanan;
-      const siblings = db.lines.filter((row) => row.batchId === line.batchId);
-      const next = applyLinePatch(line, patch, siblings);
-      Object.assign(line, next);
-      if (previous !== line.noPesanan) {
-        const stillThere = db.lines.some((row) => row.batchId === line.batchId && row.noPesanan === previous);
-        if (!stillThere) {
-          db.syncs = db.syncs.filter(
-            (row) => !(row.batchId === line.batchId && row.noPesanan === previous && row.status !== "tersinkron"),
-          );
-        }
+  async orderHistory(noPesanan: string) {
+    return {
+      versions: this.db.versions.filter((version) => version.noPesanan === noPesanan).sort((a, b) => a.versionNo - b.versionNo),
+      changes: this.db.changes.filter((change) => change.noPesanan === noPesanan),
+      items: this.db.syncItems.filter((item) => item.noPesanan === noPesanan),
+    };
+  }
+
+  async listChannelMaps() { return this.db.channels; }
+  async saveChannelMap(row: Omit<ChannelMapRow, "id"> & { id?: string }) {
+    const id = row.id || crypto.randomUUID();
+    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    const index = this.db.channels.findIndex((item) => item.id === id || (item.channelRaw === row.channelRaw && item.storeRaw === row.storeRaw));
+    if (index >= 0) this.db.channels[index] = { ...this.db.channels[index], ...next, id: this.db.channels[index].id };
+    else this.db.channels.push(next);
+    this.persist();
+  }
+  async deleteChannelMap(id: string) {
+    this.db.channels = this.db.channels.filter((row) => row.id !== id);
+    this.persist();
+  }
+  async listProvinceMaps() { return this.db.provinces; }
+  async saveProvinceMap(row: Omit<ProvinceMapRow, "id"> & { id?: string }) {
+    const id = row.id || crypto.randomUUID();
+    const index = this.db.provinces.findIndex((item) => item.id === id || item.raw === row.raw);
+    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    if (index >= 0) this.db.provinces[index] = { ...this.db.provinces[index], ...next, id: this.db.provinces[index].id };
+    else this.db.provinces.push(next);
+    this.persist();
+  }
+  async listCityMaps() { return this.db.cities; }
+  async saveCityMap(row: Omit<CityMapRow, "id"> & { id?: string }) {
+    const id = row.id || crypto.randomUUID();
+    const index = this.db.cities.findIndex((item) => item.id === id || (item.provinceRaw === row.provinceRaw && item.cityRaw === row.cityRaw));
+    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    if (index >= 0) this.db.cities[index] = { ...this.db.cities[index], ...next, id: this.db.cities[index].id };
+    else this.db.cities.push(next);
+    this.persist();
+  }
+  async listWeights() { return this.db.weights; }
+  async upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean) {
+    if (replace) this.db.weights = [];
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      const key = row.bundleKey.trim();
+      if (!key) continue;
+      const existing = this.db.weights.find((item) => item.bundleKey === key);
+      if (existing) {
+        existing.bobot = row.bobot;
+        existing.updatedAt = now;
+      } else {
+        this.db.weights.push({ id: crypto.randomUUID(), bundleKey: key, bobot: row.bobot, updatedAt: now });
       }
-      this.touch(db, line.batchId);
-      return { ...line };
-    });
+    }
+    this.persist();
+    return rows.length;
   }
-
-  deleteLines(ids: string[]) {
-    return this.withDb((db) => {
-      const idset = new Set(ids);
-      const chosen = db.lines.filter((row) => idset.has(row.id));
-      const blocked = chosen.filter((row) => row.syncStatus === "tersinkron");
-      const blockedIds = new Set(blocked.map((row) => row.id));
-      const removed = chosen.filter((row) => !blockedIds.has(row.id));
-      const batchIds = new Set(removed.map((row) => row.batchId));
-      const orders = removed.map((row) => ({ batchId: row.batchId, noPesanan: row.noPesanan }));
-      db.lines = db.lines.filter((row) => !removed.some((item) => item.id === row.id));
-      const seen = new Set<string>();
-      for (const item of orders) {
-        const key = `${item.batchId}\0${item.noPesanan}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const { batchId, noPesanan } = item;
-        const remains = db.lines.some((row) => row.batchId === batchId && row.noPesanan === noPesanan);
-        if (!remains) {
-          db.syncs = db.syncs.filter(
-            (row) => !(row.batchId === batchId && row.noPesanan === noPesanan && row.status !== "tersinkron"),
-          );
-        }
-      }
-      for (const batchId of batchIds) this.touch(db, batchId);
-      return { deleted: removed.length, blocked: blocked.length };
-    });
+  async updateWeight(id: string, patch: { bundleKey?: string; bobot?: number }) {
+    const row = this.db.weights.find((item) => item.id === id);
+    if (!row) throw new AppError("Bobot tidak ditemukan.");
+    if (patch.bundleKey) row.bundleKey = patch.bundleKey.trim();
+    if (patch.bobot != null) row.bobot = patch.bobot;
+    row.updatedAt = new Date().toISOString();
+    this.persist();
+    return row;
   }
-
-  listWeights() {
-    return this.withDb((db) => [...db.weights].sort((a, b) => a.bundleKey.localeCompare(b.bundleKey)));
+  async deleteWeight(id: string) {
+    this.db.weights = this.db.weights.filter((row) => row.id !== id);
+    this.persist();
   }
-
-  upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean) {
-    return this.withDb((db) => {
-      if (replace) db.weights = [];
-      const now = new Date().toISOString();
-      for (const row of rows) {
-        const bundleKey = row.bundleKey.trim();
-        if (!bundleKey) continue;
-        if (!Number.isFinite(row.bobot) || row.bobot < 0) {
-          throw new AppError(`Bobot tidak valid untuk ${bundleKey}.`);
-        }
-        const existing = db.weights.find((item) => item.bundleKey === bundleKey);
-        if (existing) {
-          existing.bobot = row.bobot;
-          existing.updatedAt = now;
-        } else {
-          db.weights.push({ id: crypto.randomUUID(), bundleKey, bobot: row.bobot, updatedAt: now });
-        }
-      }
-      return db.weights.length;
-    });
+  async listReviews() { return this.db.reviews; }
+  async resolveReview(id: string) {
+    const row = this.db.reviews.find((item) => item.id === id);
+    if (row) row.status = "resolved";
+    this.persist();
   }
-
-  updateWeight(id: string, patch: { bundleKey?: string; bobot?: number }) {
-    return this.withDb((db) => {
-      const weight = db.weights.find((row) => row.id === id);
-      if (!weight) throw new AppError("Bobot tidak ditemukan.", 404);
-      if (patch.bundleKey != null) {
-        const bundleKey = patch.bundleKey.trim();
-        if (!bundleKey) throw new AppError("Kunci bundle tidak boleh kosong.");
-        if (db.weights.some((row) => row.id !== id && row.bundleKey === bundleKey)) {
-          throw new AppError("Kunci bundle sudah ada.");
-        }
-        weight.bundleKey = bundleKey;
-      }
-      if (patch.bobot != null) {
-        if (!Number.isFinite(patch.bobot) || patch.bobot < 0) throw new AppError("Bobot tidak valid.");
-        weight.bobot = patch.bobot;
-      }
-      weight.updatedAt = new Date().toISOString();
-      return { ...weight };
-    });
+  async getSettings() { return this.db.settings; }
+  async saveSettings(settings: AppSettings) {
+    this.db.settings = sanitizeSettings(settings);
+    this.persist();
+    return this.db.settings;
   }
-
-  deleteWeight(id: string) {
-    return this.withDb((db) => {
-      db.weights = db.weights.filter((row) => row.id !== id);
-    });
+  async getTokens() { return this.db.tokens; }
+  async saveTokens(tokens: AccurateTokens | null) {
+    this.db.tokens = tokens;
+    this.persist();
   }
-
-  weightMap() {
-    return this.withDb((db) => new Map(db.weights.map((row) => [row.bundleKey, row.bobot])));
-  }
-
-  getSettings() {
-    return this.withDb((db) => db.settings);
-  }
-
-  saveSettings(settings: AppSettings) {
-    return this.withDb((db) => {
-      db.settings = sanitizeSettings(settings);
-      return db.settings;
-    });
-  }
-
-  getTokens() {
-    return this.withDb((db) => db.tokens);
-  }
-
-  saveTokens(tokens: AccurateTokens | null) {
-    return this.withDb((db) => {
-      db.tokens = tokens;
-    });
-  }
-
-  linesForOrders(batchId: string, orderNos: string[]) {
-    return this.withDb((db) => {
-      const wanted = new Set(orderNos);
-      return db.lines
-        .filter((row) => row.batchId === batchId && wanted.has(row.noPesanan))
-        .sort((a, b) => a.rowIndex - b.rowIndex);
-    });
-  }
-
-  saveOrderSync(input: OrderSyncInput) {
-    return this.withDb((db) => {
-      const now = new Date().toISOString();
-      let sync = db.syncs.find((row) => row.batchId === input.batchId && row.noPesanan === input.noPesanan);
-      if (!sync) {
-        sync = {
-          id: crypto.randomUUID(),
-          batchId: input.batchId,
-          noPesanan: input.noPesanan,
-          status: input.status,
-          accurateId: null,
-          accurateNumber: null,
-          payload: null,
-          response: null,
-          error: null,
-          syncedAt: null,
-          syncedBy: null,
-        };
-        db.syncs.push(sync);
-      }
-      if (sync.status === "tersinkron" && input.status === "tersinkron") {
-        throw new AppError(`Pesanan ${input.noPesanan} sudah tersinkron.`);
-      }
-      const elsewhere = db.syncs.find(
-        (row) => row.noPesanan === input.noPesanan && row.batchId !== input.batchId && row.status === "tersinkron",
-      );
-      if (input.status === "tersinkron" && elsewhere) {
-        throw new AppError(`Pesanan ${input.noPesanan} sudah tersinkron di batch lain.`);
-      }
-      sync.status = input.status;
-      if (input.accurateId !== undefined) sync.accurateId = input.accurateId;
-      if (input.accurateNumber !== undefined) sync.accurateNumber = input.accurateNumber;
-      if (input.payload !== undefined) sync.payload = input.payload;
-      if (input.response !== undefined) sync.response = input.response;
-      if (input.error !== undefined) sync.error = input.error;
-      if (input.syncedAt !== undefined) sync.syncedAt = input.syncedAt;
-      if (input.syncedBy !== undefined) sync.syncedBy = input.syncedBy;
-      if (input.status === "tersinkron" && !sync.syncedAt) sync.syncedAt = now;
-      for (const line of db.lines) {
-        if (line.batchId === input.batchId && line.noPesanan === input.noPesanan) line.syncStatus = input.status;
-      }
-      this.touch(db, input.batchId);
-      return { ...sync };
-    });
-  }
-
-  findSyncedElsewhere(noPesanan: string, batchId: string) {
-    return this.withDb(
-      (db) =>
-        db.syncs.find(
-          (row) => row.noPesanan === noPesanan && row.batchId !== batchId && row.status === "tersinkron",
-        ) ?? null,
-    );
-  }
-
-  resetOrder(batchId: string, noPesanan: string) {
-    return this.withDb((db) => {
-      const sync = db.syncs.find((row) => row.batchId === batchId && row.noPesanan === noPesanan);
-      if (sync) {
-        sync.status = "belum";
-        sync.error = null;
-      }
-      for (const line of db.lines) {
-        if (line.batchId === batchId && line.noPesanan === noPesanan) line.syncStatus = "belum";
-      }
-      this.touch(db, batchId);
-    });
-  }
-
-  recalcBatch(batchId: string) {
-    return this.withDb((db) => {
-      const weights = new Map(db.weights.map((row) => [row.bundleKey, row.bobot]));
-      let updated = 0;
-      let skipped = 0;
-      for (const line of db.lines) {
-        if (line.batchId !== batchId) continue;
-        if (line.syncStatus === "tersinkron") {
-          skipped += 1;
-          continue;
-        }
-        Object.assign(line, withWeights(line, weights));
-        updated += 1;
-      }
-      this.touch(db, batchId);
-      return { updated, skipped };
-    });
+  async currentVersions() {
+    return this.db.versions.filter((version) => version.isCurrent);
   }
 }

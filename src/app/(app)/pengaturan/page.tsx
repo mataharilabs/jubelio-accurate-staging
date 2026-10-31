@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { SettingsPanel } from "@/components/settings-panel";
+import { redirect } from "next/navigation";
 
-export default function SettingsPage() {
-  return (
-    <Suspense fallback={<p className="text-sm text-muted">Memuat pengaturan…</p>}>
-      <SettingsPanel />
-    </Suspense>
-  );
+export default function Page() {
+  redirect("/pengaturan/accurate");
 }

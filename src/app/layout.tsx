@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Plus_Jakarta_Sans } from "next/font/google";
+import { IBM_Plex_Mono, Inter } from "next/font/google";
 import "./globals.css";
 
-const sans = Plus_Jakarta_Sans({
+const sans = Inter({
   subsets: ["latin"],
   variable: "--font-sans",
   weight: ["400", "500", "600", "700"],
@@ -15,8 +15,8 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Staging Penjualan · Asiacommerce",
-  description: "Area penyiapan penjualan harian Jubelio sebelum sinkron ke Accurate Online.",
+  title: "Jubelio → Accurate",
+  description: "Dashboard penjualan Jubelio, pembersihan data, dan sync faktur ke Accurate.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

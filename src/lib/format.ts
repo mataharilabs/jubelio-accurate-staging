@@ -1,12 +1,3 @@
-import type { SyncStatus } from "@/lib/db/types";
-
-export const SYNC_LABEL: Record<SyncStatus, string> = {
-  belum: "Belum sinkron",
-  pratinjau: "Pratinjau",
-  tersinkron: "Tersinkron",
-  gagal: "Gagal",
-};
-
 export function formatRp(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("id-ID", {
@@ -15,6 +6,24 @@ export function formatRp(value: number | null | undefined): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+export function rp(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `Rp${Math.round(value).toLocaleString("id-ID")}`;
+}
+
+export function rpCompact(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `Rp${(value / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 2 })} M`;
+  if (abs >= 1e6) return `Rp${(value / 1e6).toLocaleString("id-ID", { maximumFractionDigits: 1 })} jt`;
+  if (abs >= 1e3) return `Rp${(value / 1e3).toLocaleString("id-ID", { maximumFractionDigits: 0 })} rb`;
+  return rp(value);
+}
+
+export function numId(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return Math.round(value).toLocaleString("id-ID");
 }
 
 export function formatNumber(value: number | null | undefined, digits = 2): string {
