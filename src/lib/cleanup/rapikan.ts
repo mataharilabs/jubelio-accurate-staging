@@ -193,10 +193,18 @@ function finiteOrNull(value: number): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Item or bundle name is Bee & Flower or Flauhra. Matching is case-insensitive. */
+export function isBeeFlowerBrand(name: string | null | undefined): boolean {
+  const value = (name ?? "").toLowerCase();
+  return value.includes("bee & flower") || value.includes("bee flower") || value.includes("flauhra");
+}
+
 type Working = {
   tanggal: Date | null;
   noPesanan: string;
   channel: string;
+  storeRaw: string;
+  brandItem: boolean;
   storeName: string;
   sku: string;
   productName: string;
@@ -288,13 +296,17 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
     if (provMap?.needsReview) flags.push("provinsi");
     if (cityMap?.needsReview) flags.push("kota");
 
-    const productName = (isBundle ? text(row.itemNameBundle) : null) || text(row.namaBarang) || "";
+    const itemName = text(row.namaBarang);
+    const bundleName = text(row.itemNameBundle);
+    const productName = (isBundle ? bundleName : null) || itemName || "";
     if (noPesanan) keptOrders.add(noPesanan);
 
     working.push({
       tanggal: row.tanggal,
       noPesanan,
       channel: hit ? hit.channel : (channelRaw ?? ""),
+      storeRaw: (storeRaw ?? "").trim(),
+      brandItem: isBeeFlowerBrand(itemName) || isBeeFlowerBrand(bundleName),
       storeName: hit ? hit.store : (storeRaw ?? ""),
       sku: (isBundle ? bundleRaw! : (skuRaw ?? "")).trim(),
       productName,
@@ -313,6 +325,24 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
       pos,
       provinceRawEmpty: !provRaw.trim(),
     });
+  }
+
+  const byOrder = new Map<string, Working[]>();
+  for (const row of working) {
+    const list = byOrder.get(row.noPesanan) ?? [];
+    list.push(row);
+    byOrder.set(row.noPesanan, list);
+  }
+  for (const rows of byOrder.values()) {
+    if (rows.some((row) => row.pos)) continue;
+    if (rows.some((row) => row.storeRaw !== "")) continue;
+    if (rows.length > 0 && rows.every((row) => row.brandItem)) {
+      for (const row of rows) row.storeName = "Bee & Flower";
+      continue;
+    }
+    for (const row of rows) {
+      if (!row.storeName.trim()) row.storeName = "Jansen Official Store";
+    }
   }
 
   for (const row of working) {
