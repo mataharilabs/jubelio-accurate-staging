@@ -150,6 +150,9 @@ export function AccurateView() {
         </div>
         <div className="f mt"><label>ID database</label><input value={settings.accurateDatabaseId} onChange={(event) => setSettings({ ...settings, accurateDatabaseId: event.target.value })} /></div>
         <label className="small"><input type="checkbox" checked={settings.requireWarehouse} onChange={(event) => setSettings({ ...settings, requireWarehouse: event.target.checked })} /> Wajibkan gudang bila lokasi terisi</label>
+        <div className="f mt"><label>Lokasi Jubelio yang ditarik (satu per baris)</label>
+          <textarea rows={8} value={(settings.jubelioLocations ?? []).join("\n")} onChange={(event) => setSettings({ ...settings, jubelioLocations: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })} />
+        </div>
         <div className="mt"><button className="btn pri" onClick={() => api("/api/settings", { method: "PUT", body: JSON.stringify(settings) }).then(() => setMessage("Pengaturan disimpan."))}>Simpan</button></div>
       </div>
       <div className="card">

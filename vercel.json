@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/jubelio?schedule=daily",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/jubelio?schedule=weekly",
+      "schedule": "59 16 * * 0"
+    }
+  ]
+}

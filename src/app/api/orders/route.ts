@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function GET(request: Request) {
   try {
-    await requireSession();
+    await requirePermission("orders.view");
     const url = new URL(request.url);
     const page = Number(url.searchParams.get("page") ?? "0");
     const result = await (await getStore()).listOrders({

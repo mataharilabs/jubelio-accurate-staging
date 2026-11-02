@@ -155,25 +155,36 @@ export function classifyOrder(current: OrderVersion | null, synced: OrderVersion
   return "Sama";
 }
 
+/** Status-only changes are informational. RETURNED still needs a re-sync confirmation. Canceled-after-sync is flagged, but Accurate deletion waits for the Phase 2 SOP. */
+export type ChangeDisposition = "sync" | "confirm" | "info" | "deferred";
+
+export function changeDisposition(category: SyncCategory | null): ChangeDisposition {
+  if (category === "Baru") return "sync";
+  if (category === "Berubah" || category === "Returned") return "confirm";
+  if (category === "Batal") return "deferred";
+  return "info";
+}
+
 export function needsConfirmation(category: SyncCategory | null): boolean {
-  return category === "Berubah" || category === "Returned" || category === "Batal";
+  return changeDisposition(category) === "confirm";
 }
 
 export function preselected(category: SyncCategory | null): boolean {
-  return category === "Baru" || category === "Berubah" || category === "Batal" || category === "Returned";
+  return category === "Baru" || category === "Berubah" || category === "Returned";
 }
 
 export function canSync(category: SyncCategory | null, decision: "confirmed" | "ignored" | null, decisionVersionId: string | null, currentVersionId: string): boolean {
-  if (category === "Baru") return true;
-  if (!needsConfirmation(category)) return false;
+  const disposition = changeDisposition(category);
+  if (disposition === "sync") return true;
+  if (disposition !== "confirm") return false;
   return decision === "confirmed" && decisionVersionId === currentVersionId;
 }
 
 export function summaryOf(category: SyncCategory, changes: FieldChange[]): string {
   if (category === "Baru") return "Pesanan baru, belum pernah disync";
-  if (category === "Batal") return "Dibatalkan setelah tersinkron — invoice di Accurate perlu dihapus";
-  if (category === "Returned") return "Status menjadi RETURNED — perlu disync ulang";
-  if (category === "Status saja") return "Hanya status Jubelio yang berubah — diperbarui di web, tidak disync";
+  if (category === "Batal") return "Dibatalkan setelah tersinkron — ditandai untuk dihapus di Accurate (SOP Fase 2, belum dikirim)";
+  if (category === "Returned") return "Status menjadi RETURNED — perlu konfirmasi lalu sync ulang";
+  if (category === "Status saja") return "Hanya status yang berubah — informasi, tanpa konfirmasi dan tidak disync";
   if (category === "Sama") return "Tidak ada perubahan";
   const labels = [...new Set(changes.filter((change) => change.field !== "header.status").map((change) => change.field.split(".")[0] === "line" ? `SKU ${change.field.split(".")[1]}` : change.field.replace("header.", "")))];
   return labels.slice(0, 4).join(", ") || "Nilai berubah";

@@ -61,6 +61,7 @@ export function DashboardView() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: keyof ProductRow; dir: number }>({ key: "net", dir: -1 });
   const [openMs, setOpenMs] = useState<string | null>(null);
+  const [metric, setMetric] = useState<"net" | "gross">("net");
 
   const query = useMemo<DashboardQuery>(() => ({
     from: from || null,
@@ -117,6 +118,23 @@ export function DashboardView() {
     }).catch((err: Error) => setError(err.message));
   }, [ready, query, compare, periods, from, to]);
 
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMs(null);
+    }
+    function onDown(event: MouseEvent) {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".ms")) return;
+      setOpenMs(null);
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, []);
+
   function toggle(key: string, value: string) {
     setSel((current) => {
       const list = current[key] ?? [];
@@ -131,6 +149,7 @@ export function DashboardView() {
       format,
       query,
       periods: compare ? periods : undefined,
+      metric,
     });
   }
 
@@ -146,7 +165,9 @@ export function DashboardView() {
   const visibleFilters = more ? FILTERS : FILTERS.slice(0, 2);
   const products = (report?.products ?? []).filter((row) => !q || `${row.sku} ${row.name}`.toLowerCase().includes(q.toLowerCase()));
   products.sort((a, b) => ((a[sort.key] > b[sort.key] ? 1 : -1) * sort.dir));
-  const bestRows = [...(report?.products ?? [])].sort((a, b) => best === "qty" ? b.qty - a.qty : b.net - a.net).slice(0, 10);
+  const valueOf = (row: { gross: number; net: number }) => metric === "gross" ? row.gross : row.net;
+  const metricLabel = metric === "gross" ? "Penjualan kotor" : "Revenue bersih";
+  const bestRows = [...(report?.products ?? [])].sort((a, b) => best === "qty" ? b.qty - a.qty : valueOf(b) - valueOf(a)).slice(0, 10);
   const colors = Object.fromEntries((options?.channels ?? []).map((name, index) => [name, CHART_PAL[index % CHART_PAL.length]]));
 
   return (
@@ -157,6 +178,13 @@ export function DashboardView() {
         <div className={`sheet ${sheet ? "open" : ""}`}>
           {sheet ? <button className="btn" onClick={() => setSheet(false)}>Tutup filter</button> : null}
           <div className="filters" style={{ marginTop: sheet ? 12 : 0 }}>
+            <div className="f">
+              <label>Metrik grafik</label>
+              <div className="seg">
+                <button type="button" className={metric === "net" ? "on" : ""} onClick={() => setMetric("net")}>Revenue bersih</button>
+                <button type="button" className={metric === "gross" ? "on" : ""} onClick={() => setMetric("gross")}>Penjualan kotor</button>
+              </div>
+            </div>
             <div className="f">
               <label>Granularitas</label>
               <div className="seg">
@@ -175,9 +203,10 @@ export function DashboardView() {
               <div className="f" key={key}>
                 <label>{label}</label>
                 <div className={`ms ${openMs === key ? "open" : ""}`}>
-                  <button className="btn" onClick={() => setOpenMs(openMs === key ? null : key)}>
+                  <button type="button" className="btn" onClick={() => setOpenMs(openMs === key ? null : key)}>
                     {sel[key]?.length ? `${sel[key].length} dipilih` : "Semua"} ▾
                   </button>
+                  {openMs === key ? <button type="button" className="ms-backdrop" aria-label="Tutup filter" onClick={() => setOpenMs(null)} /> : null}
                   <div className="pop">
                     <label><input type="checkbox" checked={!sel[key]?.length} onChange={() => setSel((current) => ({ ...current, [key]: [] }))} /> Semua</label>
                     {(optionMap[key] ?? []).map((value) => (
@@ -213,7 +242,7 @@ export function DashboardView() {
       </div>
 
       {!report ? <div className="card mt empty">Memuat data…</div> : compare ? (
-        <Compare reports={compared} />
+        <Compare reports={compared} metric={metric} />
       ) : (
         <>
           <div className="grid g6 mt">
@@ -233,28 +262,25 @@ export function DashboardView() {
               <h3>Tren penjualan <small>{granularity === "day" ? "harian" : granularity === "week" ? "mingguan" : "bulanan"}</small></h3>
               <BarChart
                 labels={report.trend.map((row) => row.label)}
-                series={[
-                  { name: "Penjualan kotor", values: report.trend.map((row) => row.gross), color: "#c7d2fe" },
-                  { name: "Revenue bersih", values: report.trend.map((row) => row.net), color: "#4f46e5" },
-                ]}
+                series={[{ name: metricLabel, values: report.trend.map((row) => valueOf(row)), color: "#4f46e5" }]}
                 line={{ name: "Jumlah pesanan", values: report.trend.map((row) => row.orders), color: "#f59e0b" }}
               />
             </div>
             <div className="card">
-              <h3>Penjualan per channel <small>kotor</small></h3>
-              <Donut items={report.channels.map((row) => ({ label: row.key || "—", value: row.gross, color: colors[row.key] || "#64748b" }))} />
+              <h3>Penjualan per channel <small>{metricLabel}</small></h3>
+              <Donut items={report.channels.map((row) => ({ label: row.key || "—", value: valueOf(row), color: colors[row.key] || "#64748b" }))} />
             </div>
           </div>
           <div className="grid g2 mt">
             <div className="card">
-              <h3>Penjualan per toko <small>kotor · {report.stores.length} toko</small></h3>
+              <h3>Penjualan per toko <small>{metricLabel} · {report.stores.length} toko</small></h3>
               <div style={{ maxHeight: 330, overflow: "auto" }}>
-                <HBars items={report.stores.map((row, index) => ({ label: row.key || "—", value: row.gross, color: CHART_PAL[index % CHART_PAL.length] }))} />
+                <HBars items={report.stores.map((row, index) => ({ label: row.key || "—", value: valueOf(row), color: CHART_PAL[index % CHART_PAL.length] }))} />
               </div>
             </div>
             <div className="card">
               <h3 style={{ display: "flex", alignItems: "center" }}>Best seller produk <small>top 10</small><span style={{ flex: 1 }} /><span className="seg">{(["qty", "net"] as const).map((value) => <button key={value} className={best === value ? "on" : ""} onClick={() => setBest(value)}>{value === "qty" ? "Qty" : "Revenue"}</button>)}</span></h3>
-              <HBars qty={best === "qty"} items={bestRows.map((row) => ({ label: row.name ? `${row.sku} · ${row.name}` : row.sku, value: best === "qty" ? row.qty : row.net, color: "#6366f1" }))} />
+              <HBars qty={best === "qty"} items={bestRows.map((row) => ({ label: row.name ? `${row.sku} · ${row.name}` : row.sku, value: best === "qty" ? row.qty : valueOf(row), color: "#6366f1" }))} />
             </div>
           </div>
           <div className="grid g32 mt">
@@ -308,7 +334,7 @@ export function DashboardView() {
   );
 }
 
-function Compare({ reports }: { reports: { label: string; from: string; to: string; report: DashboardReport }[] }) {
+function Compare({ reports, metric }: { reports: { label: string; from: string; to: string; report: DashboardReport }[]; metric: "net" | "gross" }) {
   const base = reports[0]?.report.kpis;
   if (!base) return null;
   const metrics = [
@@ -361,13 +387,16 @@ function Compare({ reports }: { reports: { label: string; from: string; to: stri
           </div>
         </div>
         <div className="card">
-          <h3>Penjualan per channel <small>kotor, per periode</small></h3>
+          <h3>Penjualan per channel <small>{metric === "gross" ? "kotor" : "revenue bersih"}, per periode</small></h3>
           <BarChart
             labels={channels}
             series={reports.map((item, index) => ({
               name: item.label,
               color: CHART_PAL[index],
-              values: channels.map((name) => item.report.channels.find((row) => row.key === name)?.gross ?? 0),
+              values: channels.map((name) => {
+                const row = item.report.channels.find((entry) => entry.key === name);
+                return metric === "gross" ? row?.gross ?? 0 : row?.net ?? 0;
+              }),
             }))}
           />
         </div>

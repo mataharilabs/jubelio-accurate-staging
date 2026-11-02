@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSync, classifyOrder, diffVersions } from "@/lib/domain/orders";
+import { canSync, classifyOrder, diffVersions, needsConfirmation } from "@/lib/domain/orders";
 import type { OrderVersion } from "@/lib/db/types";
 
 function version(patch: Partial<OrderVersion> = {}): OrderVersion {
@@ -62,16 +62,22 @@ describe("sync categories", () => {
     expect(canSync("Berubah", "ignored", "v2", "v2")).toBe(false);
   });
 
-  it("keeps a status-only change off the sync queue unless it became RETURNED", () => {
+  it("keeps a status-only change informational unless it became RETURNED", () => {
     const synced = version({ id: "s1", status: "PROCESSING" });
     expect(classifyOrder(version({ id: "v2", status: "SHIPPED" }), synced)).toBe("Status saja");
+    expect(needsConfirmation("Status saja")).toBe(false);
     expect(canSync("Status saja", "confirmed", "v2", "v2")).toBe(false);
     expect(classifyOrder(version({ id: "v2", status: "RETURNED" }), synced)).toBe("Returned");
+    expect(needsConfirmation("Returned")).toBe(true);
+    expect(canSync("Returned", null, null, "v2")).toBe(false);
+    expect(canSync("Returned", "confirmed", "v2", "v2")).toBe(true);
   });
 
-  it("flags a synced order that was canceled as Batal", () => {
+  it("flags a synced cancellation for later Accurate deletion without syncing it now", () => {
     const synced = version({ id: "s1" });
     expect(classifyOrder(version({ id: "v2", source: "cancel", status: "CANCELED", lines: [] }), synced)).toBe("Batal");
+    expect(needsConfirmation("Batal")).toBe(false);
+    expect(canSync("Batal", "confirmed", "v2", "v2")).toBe(false);
     expect(classifyOrder(version({ source: "cancel", status: "CANCELED" }), null)).toBeNull();
   });
 

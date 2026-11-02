@@ -225,8 +225,8 @@ export class LocalStore implements DataStore {
     return this.importLines(lines, [], filename, source, by, { from: null, to: null });
   }
 
-  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }): Promise<ImportResult> {
-    return this.importLines(lines, cancels, filename, "raw", by, range);
+  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source: "raw" | "api" = "raw"): Promise<ImportResult> {
+    return this.importLines(lines, cancels, filename, source, by, range);
   }
 
   private async importLines(
@@ -240,7 +240,7 @@ export class LocalStore implements DataStore {
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
     const current = currentMap(this.db);
-    const plan = planImport(current, lines, { importId, source: source === "raw" ? "import_raw" : "import_clean", createdAt, createdBy: by });
+    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by });
     const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
     const versions = [...plan.versions, ...cancelPlan.versions];
     const record: ImportRecord = {

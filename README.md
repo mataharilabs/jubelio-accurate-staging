@@ -49,3 +49,34 @@ npm test
 Nilai channel, toko, provinsi, kota, atau bobot yang belum ada di tabel mapping ditandai untuk review. Tidak ada tebakan diam-diam. Kota kosong menjadi "Tanpa nama kota". Jubelio-POS memakai kota dari lokasi: Lintas Sby → Surabaya, Lintas Jkt → Jakarta.
 
 Impor Excel yang sudah rapi (17 kolom) lewat Sync ke Accurate, selain unggah mentah.
+
+## Fase 1
+
+Migrasi tambahan, setelah `0002_ecommerce.sql`:
+
+3. `supabase/migrations/0003_phase1.sql` — peran, pengguna aplikasi, audit, notifikasi, job tarikan Jubelio. Tidak membuat user auth dan tidak menyentuh `batches` / `sales_lines`.
+
+Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
+
+```sql
+insert into public.app_users (email, role_id, active)
+select 'admin@example.com', id, true from public.roles where name = 'Super Admin'
+on conflict (email) do update set role_id = excluded.role_id, active = true, updated_at = now();
+```
+
+Atau set `BOOTSTRAP_SUPER_ADMIN_EMAIL` ke email itu. Saat orang itu masuk, aplikasi memasangkannya ke Super Admin. Mode demo lokal, bila belum ada pengguna, akun demo diperlakukan sebagai Super Admin.
+
+| Variabel | Fungsi |
+| --- | --- |
+| `JUBELIO_EMAIL` / `JUBELIO_PASSWORD` | Login API Jubelio. Tidak dicatat di log. |
+| `CRON_SECRET` | Vercel mengirim `Authorization: Bearer` ini ke cron. |
+| `BOOTSTRAP_SUPER_ADMIN_EMAIL` | Opsional. Mengangkat email yang sudah bisa masuk. |
+
+Jadwal cron (UTC, karena Vercel Cron memakai UTC; WIB = UTC+7):
+
+| Jadwal | WIB | UTC |
+| --- | --- | --- |
+| Harian, tarik ulang H-1 s/d H-7 | 16:00 | `0 9 * * *` |
+| Mingguan, Minggu, tarik ulang H-14 s/d H-28 | 23:59 | `59 16 * * 0` |
+
+Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Job menyimpan kursor hari/halaman supaya muat di batas waktu fungsi Vercel.

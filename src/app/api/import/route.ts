@@ -3,12 +3,13 @@ import { rapikan } from "@/lib/cleanup/rapikan";
 import { readCleanWorkbook, readSalesWorkbook } from "@/lib/cleanup/read-xlsx";
 import { getStore } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { fail, requireSession } from "@/lib/http";
+import { recordAudit } from "@/lib/access/store";
+import { fail, requirePermission } from "@/lib/http";
 import { rapikanMaps } from "@/lib/sample-data";
 
 export async function POST(request: Request) {
   try {
-    const session = await requireSession();
+    const session = await requirePermission("import.upload");
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw new AppError("Pilih berkas .xlsx.");
@@ -19,10 +20,12 @@ export async function POST(request: Request) {
     const store = await getStore();
     if (mode === "clean") {
       const result = await store.importCleanLines(readCleanWorkbook(buffer), file.name, "clean", session.email);
+      await recordAudit({ actorEmail: session.email, action: "import.clean", entity: "import", entityId: result.importId, before: null, after: result });
       return NextResponse.json(result);
     }
     const cleaned = rapikan(readSalesWorkbook(buffer), await rapikanMaps(store), { from, to });
     const result = await store.importRawLines(cleaned.lines, cleaned.droppedCancels, file.name, session.email, { from, to });
+    await recordAudit({ actorEmail: session.email, action: "import.raw", entity: "import", entityId: result.importId, before: null, after: result });
     return NextResponse.json({ ...result, missingKeys: cleaned.missingKeys, unmappedChannels: cleaned.unmappedChannels });
   } catch (error) {
     return fail(error);

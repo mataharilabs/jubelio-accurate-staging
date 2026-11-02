@@ -5,7 +5,7 @@ const PUBLIC = new Set(["/masuk", "/api/auth/login", "/api/auth/mode"]);
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname.startsWith("/_next") || pathname === "/favicon.ico") return NextResponse.next();
+  if (pathname.startsWith("/_next") || pathname === "/favicon.ico" || pathname.startsWith("/api/cron/")) return NextResponse.next();
   const session = await readSessionToken(request.cookies.get(SESSION_COOKIE)?.value);
   if (!session && !PUBLIC.has(pathname)) {
     if (pathname.startsWith("/api/")) {

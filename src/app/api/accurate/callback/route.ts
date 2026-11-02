@@ -3,11 +3,11 @@ import { NextResponse } from "next/server";
 import { exchangeCode } from "@/lib/accurate/client";
 import { getStore } from "@/lib/db";
 import { appUrl } from "@/lib/env";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function GET(request: Request) {
   try {
-    await requireSession();
+    await requirePermission("settings.manage");
     const url = new URL(request.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");

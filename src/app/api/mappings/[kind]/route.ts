@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function GET(_request: Request, context: { params: Promise<{ kind: string }> }) {
   try {
-    await requireSession();
+    await requirePermission("mappings.manage");
     const { kind } = await context.params;
     const store = await getStore();
     if (kind === "channel") return NextResponse.json(await store.listChannelMaps());
@@ -19,7 +19,7 @@ export async function GET(_request: Request, context: { params: Promise<{ kind: 
 
 export async function POST(request: Request, context: { params: Promise<{ kind: string }> }) {
   try {
-    await requireSession();
+    await requirePermission("mappings.manage");
     const { kind } = await context.params;
     const body = await request.json();
     const store = await getStore();
@@ -35,7 +35,7 @@ export async function POST(request: Request, context: { params: Promise<{ kind: 
 
 export async function DELETE(request: Request, context: { params: Promise<{ kind: string }> }) {
   try {
-    await requireSession();
+    await requirePermission("mappings.manage");
     const { kind } = await context.params;
     if (kind !== "channel") throw new AppError("Hanya mapping channel yang bisa dihapus dari sini.");
     const id = new URL(request.url).searchParams.get("id");

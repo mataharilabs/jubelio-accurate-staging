@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { readWeightWorkbook } from "@/lib/cleanup/read-xlsx";
 import { getStore } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function GET() {
   try {
-    await requireSession();
+    await requirePermission("weights.manage");
     const store = await getStore();
     const [weights, reviews] = await Promise.all([store.listWeights(), store.listReviews()]);
     return NextResponse.json({ weights, reviews: reviews.filter((row) => row.kind === "bobot" && row.status === "open") });
@@ -17,7 +17,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    await requireSession();
+    await requirePermission("weights.manage");
     const store = await getStore();
     const type = request.headers.get("content-type") ?? "";
     if (type.includes("multipart/form-data")) {

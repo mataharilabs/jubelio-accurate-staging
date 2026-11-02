@@ -49,7 +49,7 @@ export interface DataStore {
   editLine(noPesanan: string, lineId: string, patch: { sku?: string; qty?: number; unitPrice?: number; city?: string }, by: string): Promise<void>;
   deleteLine(noPesanan: string, lineId: string, by: string): Promise<void>;
   importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null): Promise<ImportResult>;
-  importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }): Promise<ImportResult>;
+  importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source?: "raw" | "api"): Promise<ImportResult>;
   syncReview(days: string[]): Promise<SyncReviewRow[]>;
   prepareSync(nos: string[]): Promise<PreparedSync[]>;
   setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void>;

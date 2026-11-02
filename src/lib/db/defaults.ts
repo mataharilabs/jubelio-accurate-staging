@@ -1,4 +1,5 @@
 import type { AppSettings } from "@/lib/db/types";
+import { DEFAULT_JUBELIO_LOCATIONS } from "@/lib/jubelio/adapter";
 
 export function defaultSettings(): AppSettings {
   return {
@@ -6,6 +7,7 @@ export function defaultSettings(): AppSettings {
     defaultCustomerName: "Pelanggan Umum",
     accurateDatabaseId: "",
     requireWarehouse: false,
+    jubelioLocations: [...DEFAULT_JUBELIO_LOCATIONS],
     customerMappings: [
       { id: "map-shopee", matchType: "channel", matchValue: "Shopee", customerNo: "SHOPEE", customerName: "Shopee" },
       { id: "map-tiktok", matchType: "channel", matchValue: "Tiktok", customerNo: "TIKTOK", customerName: "Tiktok" },
@@ -41,6 +43,9 @@ export function sanitizeSettings(input: unknown): AppSettings {
     defaultCustomerName: text(data.defaultCustomerName ?? base.defaultCustomerName),
     accurateDatabaseId: text(data.accurateDatabaseId ?? base.accurateDatabaseId),
     requireWarehouse: typeof data.requireWarehouse === "boolean" ? data.requireWarehouse : base.requireWarehouse,
+    jubelioLocations: Array.isArray(data.jubelioLocations)
+      ? data.jubelioLocations.map((item) => text(item)).filter(Boolean)
+      : base.jubelioLocations,
     customerMappings: customers
       .map((row) => ({
         id: text(row?.id) || crypto.randomUUID(),

@@ -59,7 +59,7 @@ export type FieldChange = {
 export type ImportRecord = {
   id: string;
   filename: string;
-  source: "raw" | "clean" | "sample";
+  source: "raw" | "clean" | "sample" | "api";
   createdAt: string;
   createdBy: string | null;
   orderCount: number;
@@ -168,6 +168,7 @@ export type AppSettings = {
   defaultCustomerName: string;
   accurateDatabaseId: string;
   requireWarehouse: boolean;
+  jubelioLocations: string[];
 };
 
 export type AccurateTokens = {

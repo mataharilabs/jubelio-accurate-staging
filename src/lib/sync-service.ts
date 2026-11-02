@@ -1,5 +1,5 @@
-import { deleteSalesInvoice, openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
-import { buildDeleteInvoice, buildInvoice, invoiceUrl } from "@/lib/accurate/invoice";
+import { openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
+import { buildInvoice, invoiceUrl } from "@/lib/accurate/invoice";
 import { getStore } from "@/lib/db";
 import type { SyncWrite } from "@/lib/db/store";
 import { accurateConfigured, accurateEnv, missingAccurateEnv } from "@/lib/env";
@@ -33,25 +33,11 @@ export async function executeSync(nos: string[], by: string) {
   for (const item of prepared) {
     const category = item.row.category;
     const version = item.row.current;
-    const action = category === "Batal" ? "delete" : item.state?.accurateId ? "update" : "create";
+    if (category === "Batal") {
+      throw new AppError("Pesanan batal yang sudah tersinkron hanya ditandai untuk dihapus di Accurate. Penghapusan menunggu SOP Fase 2 dan tidak dikirim.");
+    }
+    const action = item.state?.accurateId ? "update" : "create";
     try {
-      if (action === "delete") {
-        const accurateId = item.state?.accurateId;
-        if (!accurateId) throw new AppError("Tidak ada id faktur Accurate untuk dihapus. SOP penghapusan juga belum final.");
-        buildDeleteInvoice(version.noPesanan, accurateId);
-        await deleteSalesInvoice(tokens.accessToken, opened.host, opened.session, accurateId);
-        writes.push({
-          noPesanan: version.noPesanan,
-          versionId: version.id,
-          category,
-          action,
-          status: "berhasil",
-          accurateId: null,
-          accurateNumber: null,
-          error: null,
-        });
-        continue;
-      }
       const draft = buildInvoice(version, settings, item.state?.accurateId, invoiceUrl(opened.host));
       if (draft.blockedReason) throw new AppError(draft.blockedReason);
       const saved = await saveSalesInvoice(tokens.accessToken, opened.host, opened.session, draft);

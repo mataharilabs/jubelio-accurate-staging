@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { dashboardQuery } from "@/lib/api/query";
 import { getStore } from "@/lib/db";
 import type { DashboardQuery } from "@/lib/db/types";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function POST(request: Request) {
   try {
-    await requireSession();
+    await requirePermission("dashboard.view");
     const body = (await request.json()) as {
       query?: Partial<DashboardQuery>;
       periods?: { label: string; from: string; to: string }[];

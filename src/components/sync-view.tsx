@@ -153,11 +153,21 @@ export function SyncView() {
             <div className="f"><label>Excel sudah rapi</label><label className="btn">Pilih berkas<input hidden type="file" accept=".xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload("clean", file); }} /></label></div>
           </div>
           <p className="small mut" style={{ marginTop: 8 }}>Filter tanggal memakai 00:00–23:59 WIB. Status Pending/Paid/Cancel dibuang. RETURNED tetap. Pasangan channel/toko atau bobot yang belum dipetakan ditandai, tidak ditebak.</p>
-          <button className="btn" disabled={busy} onClick={() => api("/api/seed", { method: "POST" }).then(() => load(days)).catch((error: Error) => setMessage(error.message))}>Muat data contoh 26–29 Okt</button>
+          <div className="filters" style={{ marginTop: 8 }}>
+            <button className="btn pri" disabled={busy || !from || !to} onClick={() => {
+              setBusy(true);
+              api<{ job: { status: string; stats: { orders: number; newVersions: number; reviews: number } } }>("/api/jubelio/pull", { method: "POST", body: JSON.stringify({ from, to }) })
+                .then((result) => { setMessage(`Tarikan Jubelio ${result.job.status}: ${result.job.stats.orders} pesanan, ${result.job.stats.newVersions} versi baru, ${result.job.stats.reviews} review.`); return load(days); })
+                .catch((error: Error) => setMessage(error.message))
+                .finally(() => setBusy(false));
+            }}>Tarik dari Jubelio</button>
+            <button className="btn" disabled={busy} onClick={() => api("/api/jubelio/pull", { method: "POST", body: JSON.stringify({ resume: true }) }).then(() => load(days)).catch((error: Error) => setMessage(error.message))}>Lanjutkan tarikan</button>
+            <button className="btn" disabled={busy} onClick={() => api("/api/seed", { method: "POST" }).then(() => load(days)).catch((error: Error) => setMessage(error.message))}>Muat data contoh 26–29 Okt</button>
+          </div>
         </div>
         <div className="card">
           <h3>2 · Aturan perbandingan</h3>
-          <p className="small">Baru, Berubah, Returned, dan Batal ikut antrian. Perubahan harus dikonfirmasi dulu. “Dianggap tidak ada perubahan” mengeluarkan pesanan dari sync. Status saja hanya tercatat di web. Batal menyiapkan penghapusan invoice — SOP final masih terbuka.</p>
+          <p className="small">Perubahan nilai (bukan status) harus dikonfirmasi, atau ditandai tidak ada perubahan, sebelum bisa disync. Perubahan status saja tampil sebagai informasi dan tidak perlu konfirmasi. RETURNED tetap minta sync ulang. Pesanan yang sudah tersinkron lalu batal ditandai untuk dihapus di Accurate, tetapi penghapusannya menunggu SOP Fase 2.</p>
         </div>
       </div>
       <div className="tabs">

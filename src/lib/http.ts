@@ -1,5 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { permissionsFor } from "@/lib/access/store";
+import { hasPermission, type Permission } from "@/lib/auth/permissions";
 import { readSessionToken, SESSION_COOKIE, type Session } from "@/lib/auth/session";
 import { WorkbookError } from "@/lib/cleanup/read-xlsx";
 import { AppError } from "@/lib/errors";
@@ -8,6 +10,13 @@ export async function requireSession(): Promise<Session> {
   const jar = await cookies();
   const session = await readSessionToken(jar.get(SESSION_COOKIE)?.value);
   if (!session) throw new AppError("Sesi habis. Masuk lagi.", 401);
+  return session;
+}
+
+export async function requirePermission(permission: Permission): Promise<Session> {
+  const session = await requireSession();
+  const granted = await permissionsFor(session);
+  if (!hasPermission(granted, permission)) throw new AppError("Tidak punya izin untuk tindakan ini.", 403);
   return session;
 }
 

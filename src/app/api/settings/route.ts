@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import type { AppSettings } from "@/lib/db/types";
 import { accurateConfigured, accurateEnv, missingAccurateEnv } from "@/lib/env";
-import { fail, requireSession } from "@/lib/http";
+import { recordAudit } from "@/lib/access/store";
+import { fail, requirePermission } from "@/lib/http";
 
 export async function GET() {
   try {
-    await requireSession();
+    await requirePermission("settings.manage");
     const store = await getStore();
     const settings = await store.getSettings();
     const tokens = await store.getTokens();
@@ -29,9 +30,10 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
-    await requireSession();
+    const session = await requirePermission("settings.manage");
     const body = (await request.json()) as AppSettings;
     const settings = await (await getStore()).saveSettings(body);
+    await recordAudit({ actorEmail: session.email, action: "settings.save", entity: "settings", entityId: "1", before: null, after: { locations: settings.jubelioLocations.length } });
     return NextResponse.json(settings);
   } catch (error) {
     return fail(error);

@@ -12,6 +12,8 @@ const LINKS = [
   { href: "/pengaturan/channel", label: "Mapping Channel & Toko", group: "Pengaturan" },
   { href: "/pengaturan/bobot", label: "Bobot Bundle", group: "Pengaturan" },
   { href: "/pengaturan/accurate", label: "Koneksi Accurate", group: "Pengaturan" },
+  { href: "/pengaturan/pengguna", label: "Pengguna & peran", group: "Pengaturan" },
+  { href: "/pengaturan/audit", label: "Jejak audit", group: "Pengaturan" },
 ];
 
 const TITLES: Record<string, string> = {
@@ -21,9 +23,38 @@ const TITLES: Record<string, string> = {
   "/pengaturan/channel": "Mapping Channel & Toko",
   "/pengaturan/bobot": "Bobot Bundle",
   "/pengaturan/accurate": "Koneksi Accurate",
+  "/pengaturan/pengguna": "Pengguna & peran",
+  "/pengaturan/audit": "Jejak audit",
 };
 
 type Meta = { lastImportAt: string | null; accurateConnected: boolean; mode: string; accurateUser: string | null };
+
+function Bell() {
+  const [open, setOpen] = useState(false);
+  const [notices, setNotices] = useState<{ id: string; title: string; body: string; read: boolean; createdAt: string }[]>([]);
+  useEffect(() => {
+    api<{ notices: { id: string; title: string; body: string; read: boolean; createdAt: string }[] }>("/api/notifications")
+      .then((result) => setNotices(result.notices))
+      .catch(() => setNotices([]));
+  }, [open]);
+  const unread = notices.filter((notice) => !notice.read).length;
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="btn sm" onClick={() => setOpen((value) => !value)} aria-label="Notifikasi">Notifikasi{unread ? ` (${unread})` : ""}</button>
+      {open ? (
+        <div className="card" style={{ position: "absolute", right: 0, top: "110%", width: 320, maxWidth: "80vw", zIndex: 70, maxHeight: 360, overflow: "auto" }}>
+          <button className="btn sm" onClick={() => api("/api/notifications", { method: "POST", body: JSON.stringify({ ids: notices.map((notice) => notice.id) }) }).then(() => setNotices((rows) => rows.map((row) => ({ ...row, read: true }))))}>Tandai dibaca</button>
+          {notices.length ? notices.map((notice) => (
+            <div key={notice.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+              <b className="small">{notice.title}</b>
+              <div className="small mut">{notice.body}</div>
+            </div>
+          )) : <div className="small mut">Belum ada notifikasi.</div>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -81,6 +112,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <h1>{TITLES[pathname] ?? "Jubelio → Accurate"}</h1>
           <div className="sp" />
           <span className="mut small">Terakhir impor: {last} WIB</span>
+          <Bell />
           <div className="avatar" title={email}>{initials}</div>
         </div>
         <div className="wrap">{children}</div>

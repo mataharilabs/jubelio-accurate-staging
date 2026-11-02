@@ -133,7 +133,7 @@ export async function pdfOrders(rows: OrderPageRow[]): Promise<Buffer> {
   return Buffer.from(await doc.save());
 }
 
-export async function pdfDashboard(report: DashboardReport, subtitle: string): Promise<Buffer> {
+export async function pdfDashboard(report: DashboardReport, subtitle: string, metric: "net" | "gross" = "net"): Promise<Buffer> {
   const { doc, font, bold, page } = await pdfBase("Dashboard E-Commerce");
   page.drawText(safe(subtitle), { x: 32, y: 538, size: 10, font, color: rgb(0.4, 0.44, 0.52) });
   const cards = [
@@ -149,9 +149,9 @@ export async function pdfDashboard(report: DashboardReport, subtitle: string): P
     page.drawText(safe(card[0]), { x, y: 510, size: 8, font, color: rgb(0.42, 0.45, 0.52) });
     page.drawText(safe(Math.round(Number(card[1])).toLocaleString("id-ID")), { x, y: 494, size: 11, font: bold });
   });
-  const max = Math.max(1, ...report.trend.map((row) => row.gross));
+  const max = Math.max(1, ...report.trend.map((row) => metric === "gross" ? row.gross : row.net));
   report.trend.slice(0, 14).forEach((row, index) => {
-    const h = (row.net / max) * 120;
+    const h = ((metric === "gross" ? row.gross : row.net) / max) * 120;
     const x = 40 + index * 48;
     page.drawRectangle({ x, y: 300, width: 28, height: Math.max(1, h), color: rgb(0.31, 0.27, 0.9) });
     page.drawText(safe(row.bucket.slice(5)), { x, y: 286, size: 7, font });

@@ -13,7 +13,8 @@ import {
   pdfSync,
   syncSheet,
 } from "@/lib/export/files";
-import { fail, requireSession } from "@/lib/http";
+import { fail, requirePermission } from "@/lib/http";
+import type { Permission } from "@/lib/auth/permissions";
 
 async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, day: string | null, q: string): Promise<OrderPageRow[]> {
   const rows: OrderPageRow[] = [];
@@ -29,7 +30,6 @@ async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, day: st
 
 export async function POST(request: Request) {
   try {
-    await requireSession();
     const body = (await request.json()) as {
       target: "dashboard" | "orders" | "sync" | "history";
       format: "xlsx" | "pdf";
@@ -38,7 +38,10 @@ export async function POST(request: Request) {
       day?: string | null;
       q?: string;
       days?: string[];
+      metric?: "net" | "gross";
     };
+    const permission: Permission = body.target === "orders" ? "orders.export" : body.target === "dashboard" ? "dashboard.export" : "sync.view";
+    await requirePermission(permission);
     const store = await getStore();
     const format = body.format === "pdf" ? "pdf" : "xlsx";
     let buffer: Buffer;
@@ -64,8 +67,8 @@ export async function POST(request: Request) {
           report: await store.dashboard(dashboardQuery(base, period.from, period.to)),
         })))
         : undefined;
-      const subtitle = `${base.from ?? "awal"} s/d ${base.to ?? "akhir"}`;
-      buffer = format === "pdf" ? await pdfDashboard(report, subtitle) : dashboardSheet(report, compare);
+      const subtitle = `${base.from ?? "awal"} s/d ${base.to ?? "akhir"} · ${body.metric === "gross" ? "Penjualan kotor" : "Revenue bersih"}`;
+      buffer = format === "pdf" ? await pdfDashboard(report, subtitle, body.metric === "gross" ? "gross" : "net") : dashboardSheet(report, compare);
       filename = "dashboard";
     }
     const type = format === "pdf"
