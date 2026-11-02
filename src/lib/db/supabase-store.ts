@@ -356,13 +356,14 @@ export class SupabaseStore implements DataStore {
       })));
       if (error) explain(error, "menyimpan riwayat perubahan");
     }
-    for (const review of plan.reviews) {
-      await this.sb.from("review_items").upsert({
+    if (plan.reviews.length) {
+      const { error } = await this.sb.from("review_items").upsert(plan.reviews.map((review) => ({
         kind: review.kind,
         raw_key: review.rawKey,
         detail: review.detail,
         status: "open",
-      }, { onConflict: "kind,raw_key" });
+      })), { onConflict: "kind,raw_key" });
+      if (error) explain(error, "menyimpan antrean review");
     }
   }
 
@@ -435,7 +436,8 @@ export class SupabaseStore implements DataStore {
       reviews: [],
       unchanged: 0,
     }, null);
-    await this.sb.from("sync_states").update({ decision: null, decision_version_id: null, updated_at: next.createdAt }).eq("no_pesanan", next.noPesanan).eq("decision_version_id", previous.id);
+    const { error } = await this.sb.from("sync_states").update({ decision: null, decision_version_id: null, updated_at: next.createdAt }).eq("no_pesanan", next.noPesanan).eq("decision_version_id", previous.id);
+    if (error) explain(error, "mengosongkan konfirmasi sync");
   }
 
   async editLine(noPesanan: string, lineId: string, patch: { sku?: string; qty?: number; unitPrice?: number; city?: string }, by: string): Promise<void> {
@@ -580,7 +582,7 @@ export class SupabaseStore implements DataStore {
     }
     for (const item of items) {
       if (item.status !== "berhasil") continue;
-      await this.sb.from("sync_states").upsert({
+      const { error } = await this.sb.from("sync_states").upsert({
         no_pesanan: item.noPesanan,
         last_synced_version_id: item.versionId,
         accurate_id: item.action === "delete" ? null : item.accurateId,
@@ -590,6 +592,7 @@ export class SupabaseStore implements DataStore {
         decision_version_id: null,
         updated_at: createdAt,
       });
+      if (error) explain(error, "menyimpan status sync");
     }
     return batch;
   }

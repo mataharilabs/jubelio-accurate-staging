@@ -199,20 +199,39 @@ export function applyLineEdit(
   }));
 }
 
+/** Postgres text and jsonb reject NUL. Composite review keys use this separator, matching rows already stored in production. */
+export const REVIEW_KEY_SEPARATOR = " | ";
+
+export function withoutNul(value: string): string {
+  return value.replaceAll("\u0000", "");
+}
+
+export function reviewItemKey(parts: string[]): string {
+  return parts.map(withoutNul).join(REVIEW_KEY_SEPARATOR);
+}
+
+function reviewDetail(detail: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(detail).map(([key, value]) => [withoutNul(key), withoutNul(value)]));
+}
+
 export function reviewsFromLines(lines: CleanLine[]): Omit<ReviewItem, "id" | "status">[] {
   const items: Omit<ReviewItem, "id" | "status">[] = [];
   const seen = new Set<string>();
   const add = (kind: ReviewItem["kind"], rawKey: string, detail: Record<string, string>) => {
     const key = `${kind}:${rawKey}`;
-    if (seen.has(key)) return;
+    if (seen.has(key) || !rawKey) return;
     seen.add(key);
-    items.push({ kind, rawKey, detail });
+    items.push({ kind, rawKey, detail: reviewDetail(detail) });
   };
   for (const line of lines) {
-    if (line.flags.includes("channel")) add("channel_store", `${line.channel}\u0000${line.storeName}`, { channel: line.channel, store: line.storeName });
-    if (line.flags.includes("provinsi")) add("province", line.province, { province: line.province });
-    if (line.flags.includes("kota")) add("city", `${line.province}\u0000${line.city}`, { province: line.province, city: line.city });
-    if (line.missingWeight && line.bundleKey) add("bobot", line.bundleKey, { bundleKey: line.bundleKey, sku: line.sku });
+    if (line.flags.includes("channel")) {
+      add("channel_store", reviewItemKey([line.channel, line.storeName]), { channel: line.channel, store: line.storeName });
+    }
+    if (line.flags.includes("provinsi")) add("province", withoutNul(line.province), { province: line.province });
+    if (line.flags.includes("kota")) {
+      add("city", reviewItemKey([line.province, line.city]), { province: line.province, city: line.city });
+    }
+    if (line.missingWeight && line.bundleKey) add("bobot", withoutNul(line.bundleKey), { bundleKey: line.bundleKey, sku: line.sku });
   }
   return items;
 }
