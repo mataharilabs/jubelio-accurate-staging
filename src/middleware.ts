@@ -1,7 +1,26 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { readSessionToken, SESSION_COOKIE } from "@/lib/auth/session";
 
-const PUBLIC = new Set(["/masuk", "/api/auth/login", "/api/auth/mode"]);
+const PUBLIC = new Set([
+  "/masuk",
+  "/atur-sandi",
+  "/api/auth/login",
+  "/api/auth/mode",
+  "/api/auth/recover",
+  "/api/auth/accept",
+]);
+
+function isAuthCallback(url: URL): boolean {
+  const type = (url.searchParams.get("type") ?? "").toLowerCase();
+  return url.searchParams.has("code")
+    || url.searchParams.has("token_hash")
+    || url.searchParams.has("error")
+    || url.searchParams.has("error_code")
+    || type === "invite"
+    || type === "recovery"
+    || type === "signup"
+    || type === "magiclink";
+}
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -15,7 +34,7 @@ export async function middleware(request: NextRequest) {
     url.pathname = "/masuk";
     return NextResponse.redirect(url);
   }
-  if (session && pathname === "/masuk") {
+  if (session && pathname === "/masuk" && !isAuthCallback(request.nextUrl)) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     return NextResponse.redirect(url);

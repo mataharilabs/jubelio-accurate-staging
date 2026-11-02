@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 
     const token = await createSessionToken(email, mode);
     const jar = await cookies();
-    jar.set(SESSION_COOKIE, token, sessionCookieOptions());
+    jar.set(SESSION_COOKIE, token, sessionCookieOptions(request));
     return NextResponse.json({ ok: true, email, mode });
   } catch (error) {
     return fail(error);

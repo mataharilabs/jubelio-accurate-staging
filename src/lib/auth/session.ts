@@ -71,11 +71,12 @@ export async function readSessionToken(token: string | undefined | null): Promis
   }
 }
 
-export function sessionCookieOptions() {
+export function sessionCookieOptions(request?: Request) {
+  const proto = request?.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https://"),
+    secure: proto === "https" || (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https://"),
     path: "/",
     maxAge: TWELVE_HOURS / 1000,
   };

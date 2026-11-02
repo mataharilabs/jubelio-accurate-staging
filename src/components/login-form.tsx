@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api-client";
+import { setPasswordPath } from "@/lib/auth/links";
 
 export function LoginForm() {
   const router = useRouter();
@@ -14,8 +15,17 @@ export function LoginForm() {
   const [mode, setMode] = useState<"demo" | "supabase" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [recover, setRecover] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [checkingLink, setCheckingLink] = useState(true);
 
   useEffect(() => {
+    const next = setPasswordPath(window.location.search, window.location.hash);
+    if (next) {
+      window.location.replace(next);
+      return;
+    }
+    setCheckingLink(false);
     api<{ mode: "demo" | "supabase"; emailHint: string | null }>("/api/auth/mode")
       .then((result) => {
         setMode(result.mode);
@@ -24,6 +34,20 @@ export function LoginForm() {
       })
       .catch(() => setMode(null));
   }, []);
+
+  async function recoverPassword(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/api/auth/recover", { method: "POST", body: JSON.stringify({ email }) });
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tautan belum terkirim.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -53,6 +77,20 @@ export function LoginForm() {
         <p className="text-xs text-white/45">Hanya untuk admin internal. Kredensial Accurate tidak disimpan di peramban.</p>
       </section>
       <section className="flex items-center justify-center px-5 py-16">
+        {checkingLink ? <p className="text-sm text-muted">Memeriksa tautan…</p> : null}
+        {!checkingLink && recover ? (
+          <form onSubmit={recoverPassword} className="w-full max-w-sm">
+            <h2 className="text-2xl font-semibold">Lupa password</h2>
+            <p className="mt-1 text-sm text-muted">Kami mengirim tautan untuk membuat sandi baru.</p>
+            <label className="mt-6 block text-sm font-medium" htmlFor="recover-email">Email</label>
+            <Input id="recover-email" type="email" autoComplete="username" className="mt-1" value={email} onChange={(event) => setEmail(event.target.value)} required />
+            {sent ? <p className="mt-3 text-sm text-muted">Jika email terdaftar, tautan pemulihan sudah dikirim.</p> : null}
+            {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+            <Button type="submit" className="mt-6 w-full" disabled={busy}>{busy ? "Mengirim…" : "Kirim tautan"}</Button>
+            <button type="button" className="mt-4 text-sm text-primary" onClick={() => { setRecover(false); setSent(false); setError(null); }}>Kembali ke masuk</button>
+          </form>
+        ) : null}
+        {!checkingLink && !recover ? (
         <form onSubmit={submit} className="w-full max-w-sm">
           <div className="text-xs font-semibold uppercase tracking-[0.16em] text-primary lg:hidden">Asiacommerce</div>
           <h2 className="mt-2 text-2xl font-semibold">Masuk</h2>
@@ -74,7 +112,11 @@ export function LoginForm() {
           <Button type="submit" className="mt-6 w-full" disabled={busy}>
             {busy ? "Memeriksa…" : "Masuk"}
           </Button>
+          {mode === "supabase" ? (
+            <button type="button" className="mt-4 text-sm text-primary" onClick={() => { setRecover(true); setError(null); }}>Lupa password</button>
+          ) : null}
         </form>
+        ) : null}
       </section>
     </div>
   );

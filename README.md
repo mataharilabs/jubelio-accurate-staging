@@ -80,3 +80,5 @@ Jadwal cron (UTC, karena Vercel Cron memakai UTC; WIB = UTC+7):
 | Mingguan, Minggu, tarik ulang H-14 s/d H-28 | 23:59 | `59 16 * * 0` |
 
 Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Job menyimpan kursor hari/halaman supaya muat di batas waktu fungsi Vercel.
+
+Undangan dan lupa password memakai Supabase Auth. Redirect yang didaftarkan harus mencakup `{asal}/masuk` (asal dari host permintaan, atau `NEXT_PUBLIC_APP_URL`), misalnya `https://jubelio-accurate-staging.vercel.app/masuk` dan nanti `https://ecommerce.asiacommerce.net/masuk`. Tautan itu dibuka di `/masuk` lalu diteruskan ke `/atur-sandi`.
