@@ -7,6 +7,9 @@ export async function eachPage<T>(load: (from: number, to: number) => Promise<T[
   const all: T[] = [];
   for (let from = 0; ; from += pageSize) {
     const page = await load(from, from + pageSize - 1);
+    if (page.length > pageSize) {
+      throw new Error(`Supabase mengembalikan ${page.length} baris untuk permintaan ${pageSize}.`);
+    }
     all.push(...page);
     if (page.length < pageSize) return all;
   }

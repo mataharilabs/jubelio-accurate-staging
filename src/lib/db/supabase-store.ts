@@ -82,6 +82,19 @@ async function must<T>(promise: PromiseLike<{ data: T; error: { message?: string
   return data;
 }
 
+/** Chunked `.in` filter. One request past 1000 matches is truncated, and a long `in.(...)` exceeds the URL limit. */
+async function selectIn(sb: SupabaseClient, table: string, column: string, values: string[], action: string): Promise<Row[]> {
+  const unique = [...new Set(values.filter(Boolean))];
+  const rows: Row[] = [];
+  for (let i = 0; i < unique.length; i += 80) {
+    const slice = unique.slice(i, i + 80);
+    const { data, error } = await sb.from(table).select("*").in(column, slice);
+    if (error) explain(error, action);
+    rows.push(...((data ?? []) as Row[]));
+  }
+  return rows;
+}
+
 function lineFrom(row: Row): OrderLine {
   return {
     id: str(row.id),
@@ -179,10 +192,17 @@ export class SupabaseStore implements DataStore {
         if (error) explain(error, "membaca baris");
         return (page ?? []) as Row[];
       });
+      const grouped = new Map<string, Row[]>();
       for (const row of data) {
         const id = str(row.version_id);
+        const list = grouped.get(id) ?? [];
+        list.push(row);
+        grouped.set(id, list);
+      }
+      for (const [id, rows] of grouped) {
+        rows.sort((a, b) => num(a.line_no) - num(b.line_no));
         const list = map.get(id) ?? [];
-        list.push(lineFrom(row));
+        list.push(...rows.map(lineFrom));
         map.set(id, list);
       }
     }
@@ -221,24 +241,23 @@ export class SupabaseStore implements DataStore {
   }
 
   async meta(): Promise<AppMeta> {
-    const [imports, current, reviews, lines, tokens] = await Promise.all([
+    const [imports, active, reviews, lines, tokens] = await Promise.all([
       this.sb.from("imports").select("created_at").order("created_at", { ascending: false }).limit(1),
-      this.sb.from("order_versions").select("source").eq("is_current", true),
-      this.sb.from("review_items").select("id").eq("status", "open"),
+      this.sb.from("order_versions").select("id", { count: "exact", head: true }).eq("is_current", true).neq("source", "cancel").neq("source", "manual_delete"),
+      this.sb.from("review_items").select("id", { count: "exact", head: true }).eq("status", "open"),
       this.sb.from("v_sales_current").select("line_id", { count: "exact", head: true }),
       this.getTokens(),
     ]);
     if (imports.error) explain(imports.error, "membaca impor");
-    if (current.error) explain(current.error, "menghitung pesanan");
+    if (active.error) explain(active.error, "menghitung pesanan");
     if (reviews.error) explain(reviews.error, "menghitung review");
-    const active = ((current.data ?? []) as Row[]).filter((row) => row.source !== "cancel" && row.source !== "manual_delete");
     return {
       mode: "supabase",
       ephemeral: false,
       lastImportAt: imports.data?.[0] ? str((imports.data[0] as Row).created_at) : null,
-      orderCount: active.length,
+      orderCount: active.count ?? 0,
       lineCount: lines.count ?? 0,
-      openReviews: (reviews.data ?? []).length,
+      openReviews: reviews.count ?? 0,
       accurateConnected: Boolean(tokens?.accessToken),
       accurateConfigured: accurateConfigured(),
       accurateUser: tokens?.userEmail ?? null,
@@ -575,13 +594,10 @@ export class SupabaseStore implements DataStore {
     });
     const versions = await this.hydrate(data);
     const nos = versions.map((version) => version.noPesanan);
-    const states = nos.length
-      ? await must(this.sb.from("sync_states").select("*").in("no_pesanan", nos), "membaca status sync")
-      : [];
-    const stateRows = (states ?? []) as Row[];
+    const stateRows = await selectIn(this.sb, "sync_states", "no_pesanan", nos, "membaca status sync");
     const syncedIds = stateRows.map((row) => strOrNull(row.last_synced_version_id)).filter((id): id is string => Boolean(id));
     const missing = syncedIds.filter((id) => !versions.some((version) => version.id === id));
-    const extra = missing.length ? await this.hydrate((await must(this.sb.from("order_versions").select("*").in("id", missing), "membaca versi tersinkron") ?? []) as Row[]) : [];
+    const extra = missing.length ? await this.hydrate(await selectIn(this.sb, "order_versions", "id", missing, "membaca versi tersinkron")) : [];
     const byId = new Map([...versions, ...extra].map((version) => [version.id, version]));
     const rows: SyncReviewRow[] = [];
     for (const version of versions) {
@@ -597,10 +613,10 @@ export class SupabaseStore implements DataStore {
   async prepareSync(nos: string[]): Promise<PreparedSync[]> {
     const review = await this.syncReview([]);
     const wanted = new Set(nos);
-    const states = await must(this.sb.from("sync_states").select("*").in("no_pesanan", nos), "membaca status sync");
+    const states = await selectIn(this.sb, "sync_states", "no_pesanan", nos, "membaca status sync");
     return review.filter((row) => wanted.has(row.noPesanan)).map((row) => ({
       row,
-      state: ((states ?? []) as Row[]).map(stateFrom).find((item) => item.noPesanan === row.noPesanan) ?? null,
+      state: states.map(stateFrom).find((item) => item.noPesanan === row.noPesanan) ?? null,
     }));
   }
 
@@ -618,7 +634,7 @@ export class SupabaseStore implements DataStore {
 
   async recordSync(by: string, items: SyncWrite[], note: string): Promise<SyncBatch> {
     const versions = items.length
-      ? await this.hydrate((await must(this.sb.from("order_versions").select("*").in("id", items.map((item) => item.versionId)), "membaca versi sync") ?? []) as Row[])
+      ? await this.hydrate(await selectIn(this.sb, "order_versions", "id", items.map((item) => item.versionId), "membaca versi sync"))
       : [];
     const byId = new Map(versions.map((version) => [version.id, version]));
     const batchId = crypto.randomUUID();

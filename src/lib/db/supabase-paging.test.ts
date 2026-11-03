@@ -20,6 +20,10 @@ describe("supabase paging", () => {
     expect(rows).toEqual([]);
   });
 
+  it("stops instead of looping when a page is larger than requested", async () => {
+    await expect(eachPage(async () => ["a", "b", "c"], 2)).rejects.toThrow("permintaan 2");
+  });
+
   it("picks the highest version_no even when it is numeric text and an older row is seen later", () => {
     const latest = pickLatestRows([
       { no_pesanan: "A", version_no: "2" },
