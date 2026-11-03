@@ -1,13 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api-client";
 import type { AppSettings, BundleWeight, ChannelMapRow, CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
+import { OFFICIAL_CITIES, OFFICIAL_PROVINCES, suggestCity, suggestProvince, type NameSuggestion } from "@/lib/region/names";
 
 type AccurateInfo = {
   settings: AppSettings;
   accurate: { configured: boolean; connected: boolean; missing: string[]; redirectUri: string; userEmail: string | null };
 };
+
+function regionSuggestion(row: ReviewItem, provinces: ProvinceMapRow[], cities: CityMapRow[]): NameSuggestion | null {
+  if (row.kind === "province") return suggestProvince(row.detail.province || row.rawKey, provinces);
+  if (row.kind === "city") return suggestCity(row.detail.province ?? "", row.detail.city || row.rawKey, provinces, cities);
+  return null;
+}
+
+function regionLabel(row: ReviewItem): string {
+  if (row.kind === "province") return row.detail.province || row.rawKey;
+  if (row.kind === "city") return `${row.detail.province || "?"} / ${row.detail.city || row.rawKey}`;
+  return row.rawKey;
+}
 
 export function MappingView() {
   const [tab, setTab] = useState<"channel" | "province" | "city">("channel");
@@ -15,6 +28,10 @@ export function MappingView() {
   const [provinces, setProvinces] = useState<ProvinceMapRow[]>([]);
   const [cities, setCities] = useState<CityMapRow[]>([]);
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [officials, setOfficials] = useState<Record<string, string>>({});
+  const [bulk, setBulk] = useState<{ id: string; label: string; official: string }[] | null>(null);
+  const [provinceDraft, setProvinceDraft] = useState({ raw: "", official: "" });
+  const [cityDraft, setCityDraft] = useState({ provinceRaw: "", cityRaw: "", official: "" });
   const [message, setMessage] = useState<string | null>(null);
 
   async function load() {
@@ -28,8 +45,21 @@ export function MappingView() {
     setProvinces(province);
     setCities(city);
     setReviews(review.filter((row) => row.status === "open"));
+    setBulk(null);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
+
+  const suggestions = useMemo(() => {
+    const map = new Map<string, NameSuggestion>();
+    for (const row of reviews) {
+      const suggestion = regionSuggestion(row, provinces, cities);
+      if (suggestion) map.set(row.id, suggestion);
+    }
+    return map;
+  }, [reviews, provinces, cities]);
+
+  const suggestedReviews = reviews.filter((row) => suggestions.get(row.id)?.official);
+  const cityOptions = OFFICIAL_CITIES.map((city) => city.name);
 
   async function saveChannel(row: ChannelMapRow) {
     await api("/api/mappings/channel", { method: "POST", body: JSON.stringify(row) });
@@ -37,10 +67,38 @@ export function MappingView() {
     await load();
   }
 
+  async function saveProvince(row: { id?: string; raw: string; official: string }) {
+    await api("/api/mappings/province", { method: "POST", body: JSON.stringify({ ...row, needsReview: false }) });
+    setMessage("Mapping provinsi disimpan.");
+    setProvinceDraft({ raw: "", official: "" });
+    await load();
+  }
+
+  async function saveCity(row: { id?: string; provinceRaw: string; cityRaw: string; official: string }) {
+    await api("/api/mappings/city", { method: "POST", body: JSON.stringify({ ...row, needsReview: false }) });
+    setMessage("Mapping kota disimpan.");
+    setCityDraft({ provinceRaw: "", cityRaw: "", official: "" });
+    await load();
+  }
+
+  async function saveReview(row: ReviewItem) {
+    const official = (officials[row.id] ?? suggestions.get(row.id)?.official ?? "").trim();
+    await api("/api/reviews", { method: "POST", body: JSON.stringify({ id: row.id, official }) });
+    setMessage("Mapping disimpan dan review ditutup.");
+    await load();
+  }
+
+  async function acceptBulk() {
+    if (!bulk?.length) return;
+    await api("/api/reviews", { method: "POST", body: JSON.stringify({ items: bulk.map((row) => ({ id: row.id, official: row.official })) }) });
+    setMessage(`${bulk.length} saran disimpan.`);
+    await load();
+  }
+
   return (
     <div>
       {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
-      {reviews.length ? <div className="warnbox" style={{ marginBottom: 12 }}>{reviews.length} nilai belum dipetakan dan tidak ditebak. Lengkapi di tabel, lalu tandai selesai.</div> : <div className="note" style={{ marginBottom: 12 }}>Semua nilai yang sudah lewat impor punya baris mapping. Nilai baru akan muncul di sini, bukan ditebak.</div>}
+      {reviews.length ? <div className="warnbox" style={{ marginBottom: 12 }}>{reviews.length} nilai belum dipetakan. Provinsi dan kota dicocokkan tanpa membedakan huruf besar atau spasi. Saran nama resmi baru tersimpan setelah Anda menyetujuinya.</div> : <div className="note" style={{ marginBottom: 12 }}>Semua nilai yang sudah lewat impor punya baris mapping. Nilai baru akan muncul di sini.</div>}
       <div className="tabs">
         <button className={tab === "channel" ? "on" : ""} onClick={() => setTab("channel")}>Channel & Toko</button>
         <button className={tab === "province" ? "on" : ""} onClick={() => setTab("province")}>Provinsi</button>
@@ -65,25 +123,88 @@ export function MappingView() {
       ) : null}
       {tab === "province" ? (
         <div className="card" style={{ overflow: "auto" }}>
+          <div className="filters" style={{ marginBottom: 8 }}>
+            <input placeholder="Provinsi Jubelio" value={provinceDraft.raw} onChange={(event) => setProvinceDraft({ ...provinceDraft, raw: event.target.value })} />
+            <input placeholder="Provinsi resmi" list="provinsi-resmi" value={provinceDraft.official} onChange={(event) => setProvinceDraft({ ...provinceDraft, official: event.target.value })} />
+            <button className="btn sm" onClick={() => saveProvince(provinceDraft).catch((error: Error) => setMessage(error.message))}>+ Baris</button>
+          </div>
           <table className="cards"><thead><tr><th>Provinsi Jubelio</th><th>Provinsi resmi</th><th>Review</th><th></th></tr></thead><tbody>
             {provinces.map((row) => (
-              <tr key={row.id}><td data-label="Mentah">{row.raw || "(kosong)"}</td><td data-label="Resmi"><input defaultValue={row.official} id={`p-${row.id}`} /></td><td>{row.needsReview ? "YA" : ""}</td><td><button className="btn sm" onClick={() => api("/api/mappings/province", { method: "POST", body: JSON.stringify({ ...row, official: (document.getElementById(`p-${row.id}`) as HTMLInputElement).value, needsReview: false }) }).then(load)}>Simpan</button></td></tr>
+              <tr key={row.id}>
+                <td data-label="Mentah">{row.raw || "(kosong)"}</td>
+                <td data-label="Resmi"><input value={row.official} list="provinsi-resmi" onChange={(event) => setProvinces((rows) => rows.map((item) => item.id === row.id ? { ...item, official: event.target.value } : item))} /></td>
+                <td>{row.needsReview ? "YA" : ""}</td>
+                <td><button className="btn sm" onClick={() => saveProvince(row).catch((error: Error) => setMessage(error.message))}>Simpan</button></td>
+              </tr>
             ))}
           </tbody></table>
         </div>
       ) : null}
       {tab === "city" ? (
         <div className="card" style={{ overflow: "auto" }}>
+          <div className="filters" style={{ marginBottom: 8 }}>
+            <input placeholder="Provinsi mentah" value={cityDraft.provinceRaw} onChange={(event) => setCityDraft({ ...cityDraft, provinceRaw: event.target.value })} />
+            <input placeholder="Kota mentah" value={cityDraft.cityRaw} onChange={(event) => setCityDraft({ ...cityDraft, cityRaw: event.target.value })} />
+            <input placeholder="Kab/Kota resmi" list="kota-resmi" value={cityDraft.official} onChange={(event) => setCityDraft({ ...cityDraft, official: event.target.value })} />
+            <button className="btn sm" onClick={() => saveCity(cityDraft).catch((error: Error) => setMessage(error.message))}>+ Baris</button>
+          </div>
           <table className="cards"><thead><tr><th>Provinsi mentah</th><th>Kota mentah</th><th>Kab/Kota resmi</th><th>Review</th><th></th></tr></thead><tbody>
             {cities.map((row) => (
-              <tr key={row.id}><td data-label="Provinsi">{row.provinceRaw || "(kosong)"}</td><td data-label="Kota">{row.cityRaw || "(kosong)"}</td><td data-label="Resmi"><input defaultValue={row.official} id={`c-${row.id}`} /></td><td>{row.needsReview ? "YA" : ""}</td><td><button className="btn sm" onClick={() => api("/api/mappings/city", { method: "POST", body: JSON.stringify({ ...row, official: (document.getElementById(`c-${row.id}`) as HTMLInputElement).value, needsReview: false }) }).then(load)}>Simpan</button></td></tr>
+              <tr key={row.id}>
+                <td data-label="Provinsi">{row.provinceRaw || "(kosong)"}</td>
+                <td data-label="Kota">{row.cityRaw || "(kosong)"}</td>
+                <td data-label="Resmi"><input value={row.official} list="kota-resmi" onChange={(event) => setCities((rows) => rows.map((item) => item.id === row.id ? { ...item, official: event.target.value } : item))} /></td>
+                <td>{row.needsReview ? "YA" : ""}</td>
+                <td><button className="btn sm" onClick={() => saveCity(row).catch((error: Error) => setMessage(error.message))}>Simpan</button></td>
+              </tr>
             ))}
           </tbody></table>
         </div>
       ) : null}
       {reviews.length ? (
-        <div className="card mt"><h3>Perlu review</h3>{reviews.map((row) => <div key={row.id} className="small">{row.kind}: {row.rawKey} <button className="btn sm" onClick={() => api("/api/reviews", { method: "POST", body: JSON.stringify({ id: row.id }) }).then(load)}>Tandai selesai</button></div>)}</div>
+        <div className="card mt">
+          <h3>Perlu review</h3>
+          <p className="small">Untuk provinsi dan kota, simpan nama resmi. Itu membuat mapping dan menutup review yang tulisannya sama. Menandai selesai tanpa nama resmi tidak tersedia, karena impor berikutnya akan membuka review lagi.</p>
+          {suggestedReviews.length ? <button className="btn sm" onClick={() => setBulk(suggestedReviews.map((row) => ({ id: row.id, label: regionLabel(row), official: suggestions.get(row.id)?.official ?? "" })))}>Terima semua saran ({suggestedReviews.length})</button> : null}
+          {bulk ? (
+            <div className="warnbox mt">
+              <strong>Periksa {bulk.length} saran sebelum disimpan.</strong>
+              <div className="tbl mt" style={{ maxHeight: 240, overflow: "auto" }}>
+                <table className="cards"><tbody>
+                  {bulk.map((row) => <tr key={row.id}><td data-label="Mentah">{row.label}</td><td data-label="Resmi">{row.official}</td></tr>)}
+                </tbody></table>
+              </div>
+              <div className="filters mt">
+                <button className="btn pri sm" onClick={() => acceptBulk().catch((error: Error) => setMessage(error.message))}>Simpan semua saran ini</button>
+                <button className="btn sm" onClick={() => setBulk(null)}>Batal</button>
+              </div>
+            </div>
+          ) : null}
+          {reviews.map((row) => {
+            const suggestion = suggestions.get(row.id);
+            if (!suggestion) {
+              return <div key={row.id} className="small">{row.kind}: {row.rawKey} <button className="btn sm" onClick={() => api("/api/reviews", { method: "POST", body: JSON.stringify({ id: row.id }) }).then(load).catch((error: Error) => setMessage(error.message))}>Tandai selesai</button></div>;
+            }
+            const value = officials[row.id] ?? suggestion.official ?? "";
+            return (
+              <div key={row.id} className="filters" style={{ marginTop: 8 }}>
+                <span className="small" style={{ minWidth: 180 }}>{regionLabel(row)}</span>
+                <input
+                  list={row.kind === "province" ? "provinsi-resmi" : "kota-resmi"}
+                  placeholder="Nama resmi"
+                  value={value}
+                  onChange={(event) => setOfficials((current) => ({ ...current, [row.id]: event.target.value }))}
+                />
+                <button className="btn sm" onClick={() => saveReview(row).catch((error: Error) => setMessage(error.message))}>Simpan mapping</button>
+                {suggestion.ambiguous ? <span className="small">Beberapa nama cocok. Pilih yang resmi.</span> : null}
+                {suggestion.fromMapping && suggestion.official ? <span className="small">Sudah ada di mapping: {suggestion.official}</span> : null}
+              </div>
+            );
+          })}
+        </div>
       ) : null}
+      <datalist id="provinsi-resmi">{OFFICIAL_PROVINCES.map((name) => <option key={name} value={name} />)}</datalist>
+      <datalist id="kota-resmi">{cityOptions.map((name) => <option key={name} value={name} />)}</datalist>
     </div>
   );
 }

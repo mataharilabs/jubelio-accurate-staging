@@ -1,8 +1,10 @@
 /**
  * Port of the approved scripts/rapikan.py (v2, 17 columns).
- * Province/city/channel values that are not in the mapping tables are kept raw
- * and flagged. They are not fuzzy-matched.
+ * Province and city values match an existing mapping after case, spacing, and a
+ * unique prefix check. Anything still unknown is kept raw and flagged.
  */
+
+import { findCity, findProvince } from "@/lib/region/names";
 
 export const DROPPED_STATUSES = new Set(["PENDING", "PAID", "CANCELED", "CANCELLED", "CANCEL"]);
 export const CANCEL_STATUSES = new Set(["CANCELED", "CANCELLED", "CANCEL"]);
@@ -227,6 +229,8 @@ type Working = {
 export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?: string | null; to?: string | null }): CleanResult {
   const from = range?.from || null;
   const to = range?.to || null;
+  const provinceRows = [...maps.provinces.values()];
+  const cityRows = [...maps.cities.values()];
   const working: Working[] = [];
   let droppedCount = 0;
   const missing = new Set<string>();
@@ -284,8 +288,8 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
 
     const provRaw = text(row.provinsi) ?? "";
     const kotaRaw = text(row.kota) ?? "";
-    const provMap = maps.provinces.get(provinceKey(provRaw));
-    const cityMap = maps.cities.get(cityKey(provRaw, kotaRaw));
+    const provMap = findProvince(provinceRows, provRaw);
+    const cityMap = findCity(cityRows, provRaw, kotaRaw);
     const province = provMap && provMap.official ? provMap.official : provRaw;
     let city = cityMap && cityMap.official ? cityMap.official : kotaRaw;
     if (!provMap) flags.push("provinsi");

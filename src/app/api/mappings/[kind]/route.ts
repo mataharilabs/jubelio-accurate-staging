@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { AppError } from "@/lib/errors";
 import { fail, requirePermission } from "@/lib/http";
+import { closeCityReviews, closeProvinceReviews } from "@/lib/region/apply";
 
 export async function GET(_request: Request, context: { params: Promise<{ kind: string }> }) {
   try {
@@ -24,9 +25,20 @@ export async function POST(request: Request, context: { params: Promise<{ kind: 
     const body = await request.json();
     const store = await getStore();
     if (kind === "channel") await store.saveChannelMap(body);
-    else if (kind === "province") await store.saveProvinceMap(body);
-    else if (kind === "city") await store.saveCityMap(body);
-    else throw new AppError("Mapping tidak dikenal.");
+    else if (kind === "province") {
+      const raw = String(body.raw ?? "").trim();
+      if (!raw) throw new AppError("Isi provinsi mentah.");
+      if (!String(body.official ?? "").trim()) throw new AppError("Isi provinsi resmi.");
+      await store.saveProvinceMap({ ...body, raw });
+      await closeProvinceReviews(store, raw);
+    } else if (kind === "city") {
+      const provinceRaw = String(body.provinceRaw ?? "").trim();
+      const cityRaw = String(body.cityRaw ?? "").trim();
+      if (!provinceRaw || !cityRaw) throw new AppError("Isi provinsi dan kota mentah.");
+      if (!String(body.official ?? "").trim()) throw new AppError("Isi kab/kota resmi.");
+      await store.saveCityMap({ ...body, provinceRaw, cityRaw });
+      await closeCityReviews(store, provinceRaw, cityRaw);
+    } else throw new AppError("Mapping tidak dikenal.");
     return NextResponse.json({ ok: true });
   } catch (error) {
     return fail(error);

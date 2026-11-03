@@ -738,7 +738,11 @@ export class SupabaseStore implements DataStore {
     return ((data ?? []) as Row[]).map((row) => ({ id: str(row.id), raw: str(row.raw), official: str(row.official), needsReview: Boolean(row.needs_review) }));
   }
   async saveProvinceMap(row: Omit<ProvinceMapRow, "id"> & { id?: string }) {
-    const { error } = await this.sb.from("province_map").upsert({ id: row.id, raw: row.raw, official: row.official, needs_review: row.needsReview });
+    const payload = { raw: row.raw, official: row.official, needs_review: row.needsReview };
+    const query = row.id
+      ? this.sb.from("province_map").upsert({ ...payload, id: row.id })
+      : this.sb.from("province_map").upsert(payload, { onConflict: "raw" });
+    const { error } = await query;
     if (error) explain(error, "menyimpan mapping provinsi");
   }
   async listCityMaps(): Promise<CityMapRow[]> {
@@ -748,9 +752,11 @@ export class SupabaseStore implements DataStore {
     }));
   }
   async saveCityMap(row: Omit<CityMapRow, "id"> & { id?: string }) {
-    const { error } = await this.sb.from("city_map").upsert({
-      id: row.id, province_raw: row.provinceRaw, city_raw: row.cityRaw, official: row.official, needs_review: row.needsReview,
-    });
+    const payload = { province_raw: row.provinceRaw, city_raw: row.cityRaw, official: row.official, needs_review: row.needsReview };
+    const query = row.id
+      ? this.sb.from("city_map").upsert({ ...payload, id: row.id })
+      : this.sb.from("city_map").upsert(payload, { onConflict: "province_raw,city_raw" });
+    const { error } = await query;
     if (error) explain(error, "menyimpan mapping kota");
   }
   async listWeights(): Promise<BundleWeight[]> {
