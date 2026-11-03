@@ -3,15 +3,38 @@ import { shouldContinueChain } from "@/lib/jubelio/schedule";
 
 export type ContinuationSchedule = (task: Promise<unknown>) => void;
 
+function deploymentHosts(): Set<string> {
+  return new Set(
+    [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL]
+      .map((value) => value?.trim().toLowerCase())
+      .filter((value): value is string => Boolean(value)),
+  );
+}
+
+/** Unique deployment hosts (VERCEL_URL) sit behind Vercel Authentication. The stable production alias and custom domains do not. */
+export function isProductionHost(hostname: string): boolean {
+  return !deploymentHosts().has(hostname.trim().toLowerCase());
+}
+
+function absoluteOrigin(value: string): string {
+  const trimmed = value.trim().replace(/\/$/, "");
+  return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+}
+
 /**
- * Same deployment that is running this invocation. A fetch to request.url can
- * miss the function (custom domain or deployment protection) and leave no log.
+ * Prefer the request origin when it is a production host. Otherwise use
+ * VERCEL_PROJECT_PRODUCTION_URL, then NEXT_PUBLIC_APP_URL. Never VERCEL_URL:
+ * that host redirects to Vercel SSO.
  */
 export function continuationUrl(requestUrl: string): string {
   const incoming = new URL(requestUrl);
-  const host = process.env.VERCEL_URL?.trim();
-  if (!host) return incoming.toString();
-  return new URL(`${incoming.pathname}${incoming.search}`, `https://${host}`).toString();
+  const path = `${incoming.pathname}${incoming.search}`;
+  if (isProductionHost(incoming.hostname)) return new URL(path, incoming.origin).toString();
+  const production = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  if (production) return new URL(path, absoluteOrigin(production)).toString();
+  const app = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (app) return new URL(path, absoluteOrigin(app)).toString();
+  return incoming.toString();
 }
 
 export function continuationHeaders(authorization: string, chain: number, bypass?: string | null): Record<string, string> {
@@ -28,10 +51,14 @@ export function enqueueContinuation(schedule: ContinuationSchedule, task: Promis
   schedule(task);
 }
 
+export function continuationRejected(status: number): boolean {
+  return status < 200 || status >= 300;
+}
+
 export async function postContinuation(fetchImpl: typeof fetch, target: string, headers: Record<string, string>): Promise<number> {
-  const response = await fetchImpl(target, { method: "GET", headers, cache: "no-store" });
+  const response = await fetchImpl(target, { method: "GET", headers, cache: "no-store", redirect: "manual" });
   await response.arrayBuffer().catch(() => undefined);
-  if (!response.ok) console.error(`Rantai cron Jubelio ditolak (${response.status}).`);
+  if (continuationRejected(response.status)) console.error(`Rantai cron Jubelio ditolak (${response.status}).`);
   return response.status;
 }
 
