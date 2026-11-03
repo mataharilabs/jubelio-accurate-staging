@@ -111,11 +111,28 @@ export function findProvince(rows: ProvinceSource[], raw: string): RegionHit | u
   return hit ? { official: hit.official, needsReview: hit.needsReview, exact: false } : undefined;
 }
 
-export function findCity(rows: CitySource[], provinceRaw: string, cityRaw: string): RegionHit | undefined {
+function provinceLabel(raw: string, provinces: ProvinceSource[]): string {
+  const official = findProvince(provinces, raw)?.official.trim();
+  if (official) return foldRegion(official);
+  const catalog = catalogProvince(raw);
+  return catalog ? foldRegion(catalog) : "";
+}
+
+/** Raw Jubelio text, or the same official province (Aceh and Nanggroe Aceh Darussalam). */
+export function sameProvinceScope(rowProvince: string, incoming: string, provinces: ProvinceSource[] = []): boolean {
+  if (sameText(rowProvince, incoming)) return true;
+  const incomingLabel = provinceLabel(incoming, provinces);
+  if (!incomingLabel) return false;
+  if (sameText(rowProvince, incomingLabel)) return true;
+  const rowLabel = provinceLabel(rowProvince, provinces);
+  return Boolean(rowLabel) && rowLabel === incomingLabel;
+}
+
+export function findCity(rows: CitySource[], provinceRaw: string, cityRaw: string, provinces: ProvinceSource[] = []): RegionHit | undefined {
   if (!cityRaw.trim()) return undefined;
   const exact = rows.find((row) => row.provinceRaw === provinceRaw && row.cityRaw === cityRaw);
   if (exact) return { official: exact.official, needsReview: exact.needsReview, exact: true };
-  const inProvince = rows.filter((row) => sameText(row.provinceRaw, provinceRaw));
+  const inProvince = rows.filter((row) => sameProvinceScope(row.provinceRaw, provinceRaw, provinces));
   const tight = consensus(inProvince.filter((row) => sameText(row.cityRaw, cityRaw)));
   if (tight) return { official: tight.official, needsReview: tight.needsReview, exact: false };
   const kind = prefixKind(cityRaw);
@@ -149,7 +166,7 @@ function provinceScope(provinceRaw: string, provinceRows: ProvinceSource[]): str
 }
 
 export function suggestCity(provinceRaw: string, cityRaw: string, provinceRows: ProvinceSource[], cityRows: CitySource[]): NameSuggestion {
-  const mapped = findCity(cityRows, provinceRaw, cityRaw);
+  const mapped = findCity(cityRows, provinceRaw, cityRaw, provinceRows);
   if (mapped?.official.trim()) return { official: mapped.official.trim(), ambiguous: false, fromMapping: true };
   const province = provinceScope(provinceRaw, provinceRows);
   if (!province || !cityRaw.trim()) return { official: null, ambiguous: false, fromMapping: false };

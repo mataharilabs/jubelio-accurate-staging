@@ -1,5 +1,5 @@
 import type { ReviewItem } from "@/lib/db/types";
-import { sameRegion } from "@/lib/region/names";
+import { sameProvinceScope, sameRegion, type ProvinceSource } from "@/lib/region/names";
 
 type ReviewStore = {
   listReviews(): Promise<ReviewItem[]>;
@@ -15,11 +15,13 @@ export async function closeProvinceReviews(store: ReviewStore, raw: string) {
   }
 }
 
-export async function closeCityReviews(store: ReviewStore, provinceRaw: string, cityRaw: string) {
+export async function closeCityReviews(store: ReviewStore, provinceRaw: string, cityRaw: string, provinces: ProvinceSource[] = []) {
   const reviews = await store.listReviews();
   for (const review of reviews) {
     if (review.status !== "open" || review.kind !== "city") continue;
-    if (sameRegion(review.detail.province ?? "", provinceRaw) && sameRegion(review.detail.city ?? "", cityRaw)) {
+    if (!sameRegion(review.detail.city ?? "", cityRaw)) continue;
+    const reviewProvince = review.detail.province || review.detail.provinceOfficial || "";
+    if (sameProvinceScope(reviewProvince, provinceRaw, provinces) || sameProvinceScope(review.detail.provinceOfficial ?? "", provinceRaw, provinces)) {
       await store.resolveReview(review.id);
     }
   }

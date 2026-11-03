@@ -36,7 +36,7 @@ export async function POST(request: Request) {
         const provinceRaw = review.detail.province ?? "";
         const cityRaw = review.detail.city || review.rawKey;
         await store.saveCityMap({ provinceRaw, cityRaw, official, needsReview: false });
-        await closeCityReviews(store, provinceRaw, cityRaw);
+        await closeCityReviews(store, provinceRaw, cityRaw, await store.listProvinceMaps());
       } else if (item.id) {
         await store.resolveReview(item.id);
       }

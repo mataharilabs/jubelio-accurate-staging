@@ -37,7 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ kind: 
       if (!provinceRaw || !cityRaw) throw new AppError("Isi provinsi dan kota mentah.");
       if (!String(body.official ?? "").trim()) throw new AppError("Isi kab/kota resmi.");
       await store.saveCityMap({ ...body, provinceRaw, cityRaw });
-      await closeCityReviews(store, provinceRaw, cityRaw);
+      await closeCityReviews(store, provinceRaw, cityRaw, await store.listProvinceMaps());
     } else throw new AppError("Mapping tidak dikenal.");
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -102,4 +102,12 @@ describe("review items created on import", () => {
       "bobot:HTCCA001L-07-HTCCA001L-01",
     ]);
   });
+
+  it("keys a city review on the raw province Jubelio sent, not the mapped name", () => {
+    const items = reviewsFromLines([
+      line({ flags: ["kota"], province: "Aceh", provinceRaw: "NANGGROE ACEH DARUSSALAM", city: "JANTHO" }),
+    ]);
+    expect(items[0].rawKey).toBe("NANGGROE ACEH DARUSSALAM | JANTHO");
+    expect(items[0].detail).toEqual({ province: "NANGGROE ACEH DARUSSALAM", city: "JANTHO", provinceOfficial: "Aceh" });
+  });
 });

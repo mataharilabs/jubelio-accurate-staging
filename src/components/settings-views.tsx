@@ -18,7 +18,12 @@ function regionSuggestion(row: ReviewItem, provinces: ProvinceMapRow[], cities: 
 
 function regionLabel(row: ReviewItem): string {
   if (row.kind === "province") return row.detail.province || row.rawKey;
-  if (row.kind === "city") return `${row.detail.province || "?"} / ${row.detail.city || row.rawKey}`;
+  if (row.kind === "city") {
+    const raw = row.detail.province || "?";
+    const official = row.detail.provinceOfficial;
+    const province = official && official !== raw ? `${raw} (${official})` : raw;
+    return `${province} / ${row.detail.city || row.rawKey}`;
+  }
   return row.rawKey;
 }
 

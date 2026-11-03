@@ -240,7 +240,10 @@ export function reviewsFromLines(lines: CleanLine[]): Omit<ReviewItem, "id" | "s
     }
     if (line.flags.includes("provinsi")) add("province", withoutNul(line.province), { province: line.province });
     if (line.flags.includes("kota")) {
-      add("city", reviewItemKey([line.province, line.city]), { province: line.province, city: line.city });
+      const provinceRaw = line.provinceRaw || line.province;
+      const detail: Record<string, string> = { province: provinceRaw, city: line.city };
+      if (line.province && line.province !== provinceRaw) detail.provinceOfficial = line.province;
+      add("city", reviewItemKey([provinceRaw, line.city]), detail);
     }
     if (line.missingWeight && line.bundleKey) add("bobot", withoutNul(line.bundleKey), { bundleKey: line.bundleKey, sku: line.sku });
   }

@@ -95,6 +95,8 @@ export type CleanLine = {
   customerCode: string;
   province: string;
   city: string;
+  /** Jubelio's province text, before the official mapping is applied. */
+  provinceRaw?: string;
   kurir: string;
   status: string;
   lokasiGudang: string | null;
@@ -216,6 +218,7 @@ type Working = {
   customerName: string;
   province: string;
   city: string;
+  provinceRaw: string;
   kurir: string;
   status: string;
   lokasiGudang: string | null;
@@ -289,7 +292,7 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
     const provRaw = text(row.provinsi) ?? "";
     const kotaRaw = text(row.kota) ?? "";
     const provMap = findProvince(provinceRows, provRaw);
-    const cityMap = findCity(cityRows, provRaw, kotaRaw);
+    const cityMap = findCity(cityRows, provRaw, kotaRaw, provinceRows);
     const province = provMap && provMap.official ? provMap.official : provRaw;
     let city = cityMap && cityMap.official ? cityMap.official : kotaRaw;
     if (!provMap) flags.push("provinsi");
@@ -320,6 +323,7 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
       customerName: text(row.pelanggan) ?? "",
       province,
       city,
+      provinceRaw: provRaw,
       kurir: text(row.kurir) ?? "",
       status: status ?? "",
       lokasiGudang: text(row.lokasiGudang),
@@ -426,6 +430,7 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
       customerCode: customerCode(row.customerName),
       province: row.province,
       city: row.city,
+      provinceRaw: row.provinceRaw,
       kurir: row.kurir,
       status,
       lokasiGudang: row.lokasiGudang,

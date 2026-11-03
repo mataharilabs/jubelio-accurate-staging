@@ -45,6 +45,19 @@ describe("region name matching", () => {
     expect(suggestCity("Sumatera Barat", "KAB. SOLOK", [], []).official).toBe("Kabupaten Solok");
   });
 
+  it("keeps JAWA BARAT / CIREBON distinct from Jawa Barat / Cirebon and still matches a city saved under the official province", () => {
+    const provinces = [{ raw: "NANGGROE ACEH DARUSSALAM", official: "Aceh", needsReview: false }];
+    const cities = [
+      { provinceRaw: "JAWA BARAT", cityRaw: "CIREBON", official: "Kota Cirebon", needsReview: false },
+      { provinceRaw: "Jawa Barat", cityRaw: "Cirebon", official: "Kabupaten Cirebon", needsReview: false },
+      { provinceRaw: "Aceh", cityRaw: "JANTHO", official: "Kota Jantho", needsReview: false },
+    ];
+    expect(findCity(cities, "JAWA BARAT", "CIREBON", provinces)?.official).toBe("Kota Cirebon");
+    expect(findCity(cities, "Jawa Barat", "Cirebon", provinces)?.official).toBe("Kabupaten Cirebon");
+    expect(findCity(cities, "jawa barat", "cirebon", provinces)).toBeUndefined();
+    expect(findCity(cities, "NANGGROE ACEH DARUSSALAM", "JANTHO", provinces)?.official).toBe("Kota Jantho");
+  });
+
   it("does not invent a regency for a district capital or an ambiguous bare name", () => {
     expect(suggestCity("Aceh", "JANTHO", provinces, cities).official).toBeNull();
     expect(suggestCity("Jawa Tengah", "UNGARAN", provinces, cities).official).toBeNull();
