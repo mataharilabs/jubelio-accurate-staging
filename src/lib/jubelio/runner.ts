@@ -212,6 +212,14 @@ async function detailChunk(job: PullJob, client: JubelioClient, deadline: number
     if (rawRows.length) {
       const cleaned = rapikan(rawRows, maps, { from: job.day, to: job.day });
       const imported = await store.importRawLines(cleaned.lines, cleaned.droppedCancels, `jubelio:${job.day}`, job.triggeredBy, { from: job.day, to: job.day }, "api");
+    try {
+      const { ensureProducts } = await import("@/lib/products/service");
+      const { publishNotice: notify } = await import("@/lib/access/store");
+      const created = await ensureProducts(cleaned.lines.map((line) => ({ sku: line.sku, name: line.productName })));
+      if (created.length) await notify({ kind: "product", title: "Produk baru belum lengkap", body: `${created.length} SKU baru ditambahkan tanpa kategori atau brand.`, data: { skus: created.slice(0, 20) } });
+    } catch {
+      // Product tables arrive with migration 0005. A missing table must not fail the order import.
+    }
       job.stats.orders += new Set(rawRows.map((row) => row.noPesanan)).size;
       job.stats.lines += rawRows.length;
       job.stats.newVersions += imported.newVersions;

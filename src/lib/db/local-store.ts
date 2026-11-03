@@ -4,6 +4,7 @@ import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
+import { matchesOrderFilter } from "@/lib/domain/order-filter";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { reportOf } from "@/lib/domain/aggregate";
 import { reviewRow } from "@/lib/domain/review-rows";
@@ -163,16 +164,20 @@ export class LocalStore implements DataStore {
   }
 
   async listOrders(query: OrderQuery): Promise<OrderPage> {
-    const q = query.q.trim().toLowerCase();
     const rows = this.db.versions
       .filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete")
       .flatMap((version) => version.lines.map((line) => ({ version, line })))
-      .filter(({ version, line }) => {
-        if (query.day && version.day !== query.day) return false;
-        if (!q) return true;
-        const hay = [version.noPesanan, line.sku, line.productName, version.customerName, version.storeName, version.city, version.channel].join(" ").toLowerCase();
-        return hay.includes(q);
-      });
+      .filter(({ version, line }) => matchesOrderFilter({
+        day: version.day,
+        status: version.status,
+        noPesanan: version.noPesanan,
+        sku: line.sku,
+        productName: line.productName,
+        customerName: version.customerName,
+        storeName: version.storeName,
+        city: version.city,
+        channel: version.channel,
+      }, query));
     const pageSize = query.pageSize || 30;
     const pages = Math.max(1, Math.ceil(rows.length / pageSize));
     const page = Math.min(query.page, pages - 1);

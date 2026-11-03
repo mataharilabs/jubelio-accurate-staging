@@ -56,7 +56,8 @@ Migrasi tambahan, setelah `0002_ecommerce.sql`:
 
 3. `supabase/migrations/0003_phase1.sql` — peran, pengguna aplikasi, audit, notifikasi, job tarikan Jubelio. Tidak membuat user auth dan tidak menyentuh `batches` / `sales_lines`.
 4. `supabase/migrations/0004_jubelio_job_lease.sql` — status `queued`, kolom sewa `lease_token` / `lease_until`, fungsi `claim_jubelio_job`, dan satu job `running` pada satu waktu. Wajib sebelum cron harian berikutnya. Tidak mengubah `batches` / `sales_lines`.
-6. `supabase/migrations/0006_jubelio_continue_cron.sql` — `pg_cron` tiap 5 menit memanggil `GET /api/cron/jubelio/continue`. Nomor 0005 adalah migrasi produk di PR lain. Tidak mengubah data pesanan. Aktifkan dulu ekstensi `pg_cron` dan `pg_net`. Secret tidak ada di file ini. Setelah migrasi, masukkan sendiri (jangan dicetak):
+5. `supabase/migrations/0005_products.sql` — kategori, brand, produk, riwayat HPP, sync HPP, RPC `orders_page` dan `product_report`. Mengisi produk dari SKU yang sudah terjual. Tidak menghapus `sku_costs` dan tidak menyentuh `batches` / `sales_lines`. Izin baru: `products.view`, `products.manage`, `hpp.sync` (Super Admin dan peran Admin). Env baru: `ACCURATE_API_TOKEN`, `ACCURATE_SIGNATURE_KEY`. Sync HPP harian mengikuti cron Jubelio 16:00 WIB (Hobby hanya dua cron), sekitar selesai tarikan.
+6. `supabase/migrations/0006_jubelio_continue_cron.sql` — `pg_cron` tiap 5 menit memanggil `GET /api/cron/jubelio/continue`. Tidak mengubah data pesanan. Aktifkan dulu ekstensi `pg_cron` dan `pg_net`. Secret tidak ada di file ini. Setelah migrasi, masukkan sendiri (jangan dicetak):
 
 ```sql
 select vault.create_secret('<<CRON_SECRET dari Vercel>>', 'cron_secret', 'Jubelio continue cron');

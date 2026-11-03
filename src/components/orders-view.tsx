@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import { downloadExport } from "@/components/download";
 import { api } from "@/lib/api-client";
 import type { OrderPage, OrderPageRow } from "@/lib/db/types";
-import { dayLabel } from "@/lib/domain/aggregate";
 import { numId } from "@/lib/format";
 
 export function OrdersView() {
-  const [day, setDay] = useState("");
-  const [days, setDays] = useState<string[]>([]);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [statuses, setStatuses] = useState<string[]>([]);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [data, setData] = useState<OrderPage | null>(null);
@@ -17,29 +19,25 @@ export function OrdersView() {
   const [form, setForm] = useState({ sku: "", qty: "", unitPrice: "", city: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load(nextPage = page, nextDay = day, nextQ = q) {
-    const result = await api<OrderPage>(`/api/orders?day=${nextDay}&q=${encodeURIComponent(nextQ)}&page=${nextPage}`);
+  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatuses = statuses, nextQ = q) {
+    const params = new URLSearchParams({ q: nextQ, page: String(nextPage) });
+    if (nextFrom) params.set("from", nextFrom);
+    if (nextTo) params.set("to", nextTo);
+    if (nextStatuses.length) params.set("statuses", nextStatuses.join(","));
+    return params.toString();
+  }
+
+  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatuses = statuses, nextQ = q) {
+    const result = await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatuses, nextQ)}`);
     setData(result);
   }
 
   useEffect(() => {
-    api<{ options?: { minDay: string | null; maxDay: string | null } }>("/api/dashboard", {
+    api<{ options?: { statuses?: string[] } }>("/api/dashboard", {
       method: "POST",
       body: JSON.stringify({ query: { granularity: "day" }, includeOptions: true }),
-    }).then((result) => {
-      const options = result.options;
-      if (options?.minDay && options.maxDay) {
-        const list: string[] = [];
-        const cursor = new Date(`${options.minDay}T00:00:00Z`);
-        const end = new Date(`${options.maxDay}T00:00:00Z`);
-        while (cursor <= end && list.length < 400) {
-          list.push(cursor.toISOString().slice(0, 10));
-          cursor.setUTCDate(cursor.getUTCDate() + 1);
-        }
-        setDays(list);
-      }
-    }).catch(() => undefined);
-    load(0, "", "").catch((err: Error) => setError(err.message));
+    }).then((result) => setStatusOptions(result.options?.statuses ?? [])).catch(() => undefined);
+    load(0, "", "", [], "").catch((err: Error) => setError(err.message));
     // Mount-only load. Later searches call load explicitly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -72,17 +70,25 @@ export function OrdersView() {
       {error ? <div className="warnbox">{error}</div> : null}
       <div className="card">
         <div className="filters">
-          <div className="f"><label>Tanggal</label>
-            <select value={day} onChange={(event) => { setDay(event.target.value); setPage(0); load(0, event.target.value, q); }}>
-              <option value="">Semua</option>
-              {days.map((value) => <option key={value} value={value}>{dayLabel(value)}</option>)}
-            </select>
+          <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); setPage(0); load(0, event.target.value, to, statuses, q).catch((err: Error) => setError(err.message)); }} /></div>
+          <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); setPage(0); load(0, from, event.target.value, statuses, q).catch((err: Error) => setError(err.message)); }} /></div>
+          <div className="f"><label>Status</label>
+            <div className={`ms ${statusOpen ? "open" : ""}`}>
+              <button type="button" className="btn" onClick={() => setStatusOpen((value) => !value)}>{statuses.length ? statuses.join(", ") : "Semua status"} ▾</button>
+              {statusOpen ? <button type="button" className="ms-backdrop" aria-label="Tutup filter" onClick={() => setStatusOpen(false)} /> : null}
+              <div className="pop">
+                <button type="button" className="btn" style={{ display: "block", width: "100%", marginBottom: 4 }} onClick={() => { setStatuses([]); setStatusOpen(false); load(0, from, to, [], q).catch((err: Error) => setError(err.message)); }}>Semua status</button>
+                {statusOptions.map((value) => (
+                  <button key={value} type="button" className="btn" style={{ display: "block", width: "100%", marginBottom: 4 }} onClick={() => { const next = [value]; setStatuses(next); setStatusOpen(false); load(0, from, to, next, q).catch((err: Error) => setError(err.message)); }}>{value}</button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="f"><label>Cari</label><input type="text" style={{ width: 280 }} placeholder="No pesanan, SKU, pelanggan, kota…" value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(0); load(0, day, q); } }} /></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => { setPage(0); load(0, day, q); }}>Cari</button></div>
+          <div className="f"><label>Cari</label><input type="text" style={{ width: 280 }} placeholder="No pesanan, SKU, pelanggan, kota…" value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(0); load(0, from, to, statuses, q).catch((err: Error) => setError(err.message)); } }} /></div>
+          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => { setPage(0); load(0, from, to, statuses, q).catch((err: Error) => setError(err.message)); }}>Cari</button></div>
           <span style={{ flex: 1 }} />
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => downloadExport("data-pesanan.xlsx", { target: "orders", format: "xlsx", day: day || null, q })}>Excel 17 kolom</button></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => downloadExport("data-pesanan.pdf", { target: "orders", format: "pdf", day: day || null, q })}>PDF</button></div>
+          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => downloadExport("data-pesanan.xlsx", { target: "orders", format: "xlsx", from: from || null, to: to || null, statuses, q }).catch((err: Error) => setError(err.message))}>Excel</button></div>
+          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => { if ((data?.total ?? 0) > 200) { setError("PDF terlalu besar untuk filter ini. Unduh Excel agar semua baris ikut."); return; } downloadExport("data-pesanan.pdf", { target: "orders", format: "pdf", from: from || null, to: to || null, statuses, q }).catch((err: Error) => setError(err.message)); }}>PDF</button></div>
         </div>
         <div className="small mut" style={{ marginTop: 8 }}>{data ? `${data.total} baris · ${data.orders} pesanan. Edit membuat versi baru dan tercatat.` : "Memuat…"}</div>
       </div>

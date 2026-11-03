@@ -233,6 +233,9 @@ export type AppMeta = {
 
 export type OrderQuery = {
   day: string | null;
+  from?: string | null;
+  to?: string | null;
+  statuses?: string[];
   q: string;
   page: number;
   pageSize: number;
@@ -262,6 +265,8 @@ export type OrderPageRow = {
   kurir: string;
   status: string;
   flags: string[];
+  hpp?: number | null;
+  grossProfit?: number | null;
 };
 
 export type OrderPage = {
