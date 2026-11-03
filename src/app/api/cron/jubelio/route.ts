@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { recentDays } from "@/lib/jubelio/adapter";
-import { advancePull, startPull } from "@/lib/jubelio/runner";
-import { latestJob } from "@/lib/jubelio/jobs";
+import { continueCron } from "@/lib/jubelio/chain";
+import { advancePull, beginScheduledPull, continueRunning } from "@/lib/jubelio/runner";
+import { STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
 
 export const maxDuration = 300;
 
@@ -18,18 +19,18 @@ function wibToday(): string {
 
 export async function GET(request: Request) {
   if (!authorized(request)) return NextResponse.json({ error: "Cron tidak diizinkan." }, { status: 401 });
-  const schedule = new URL(request.url).searchParams.get("schedule") === "weekly" ? "weekly" : "daily";
+  const url = new URL(request.url);
+  const schedule = url.searchParams.get("schedule") === "weekly" ? "weekly" : "daily";
+  const chain = Number(request.headers.get("x-job-chain") ?? "0");
   const today = wibToday();
   const days = schedule === "weekly" ? recentDays(today, 28, 14) : recentDays(today, 7, 1);
-  const current = await latestJob();
-  const job = current?.status === "running" ? current : await startPull(schedule, `cron:${schedule}`, days);
-  const advanced = await advancePull(job.id);
-  if (advanced.status === "running") {
-    const chain = Number(request.headers.get("x-job-chain") ?? "0");
-    if (chain < 12) {
-      const url = new URL(request.url);
-      void fetch(url, { headers: { authorization: request.headers.get("authorization") ?? "", "x-job-chain": String(chain + 1) } }).catch(() => undefined);
-    }
-  }
-  return NextResponse.json({ id: advanced.id, status: advanced.status, stats: advanced.stats, day: advanced.day });
+  const job = chain === 0
+    ? await beginScheduledPull(schedule, `cron:${schedule}`, days)
+    : await continueRunning();
+  if (!job) return NextResponse.json({ status: "idle" });
+  const step = await advancePull(job.id, STEP_BUDGET_MS);
+  if (!step.busy && step.job.status !== "running") await continueRunning();
+  const running = step.busy ? false : Boolean(await continueRunning());
+  continueCron(url, request.headers.get("authorization") ?? "", Number.isFinite(chain) && chain > 0 ? chain : 0, running, step.busy);
+  return NextResponse.json({ id: step.job.id, status: step.job.status, stats: step.job.stats, day: step.job.day, busy: step.busy, chain: Number.isFinite(chain) ? chain : 0 });
 }

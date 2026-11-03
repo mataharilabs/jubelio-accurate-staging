@@ -55,6 +55,7 @@ Impor Excel yang sudah rapi (17 kolom) lewat Sync ke Accurate, selain unggah men
 Migrasi tambahan, setelah `0002_ecommerce.sql`:
 
 3. `supabase/migrations/0003_phase1.sql` — peran, pengguna aplikasi, audit, notifikasi, job tarikan Jubelio. Tidak membuat user auth dan tidak menyentuh `batches` / `sales_lines`.
+4. `supabase/migrations/0004_jubelio_job_lease.sql` — status `queued`, kolom sewa `lease_token` / `lease_until`, fungsi `claim_jubelio_job`, dan satu job `running` pada satu waktu. Wajib sebelum cron harian berikutnya. Tidak mengubah `batches` / `sales_lines`.
 
 Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
 
@@ -79,6 +80,6 @@ Jadwal cron (UTC, karena Vercel Cron memakai UTC; WIB = UTC+7):
 | Harian, tarik ulang H-1 s/d H-7 | 16:00 | `0 9 * * *` |
 | Mingguan, Minggu, tarik ulang H-14 s/d H-28 | 23:59 | `59 16 * * 0` |
 
-Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Job menyimpan kursor hari/halaman supaya muat di batas waktu fungsi Vercel.
+Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Cron Hobby hanya menyala sekali sehari dan tiap fungsi maksimal 300 detik. Satu langkah memakai 250 detik, lalu `after()` memanggil langkah berikutnya (paling banyak 60 langkah) supaya jendela harian selesai di hari yang sama. Sewa di `jubelio_jobs` menolak dua langkah sekaligus. Jendela mingguan yang datang saat harian masih jalan masuk antrean, bukan ditimpa. Job yang masih `running` setelah 36 jam ditutup agar jadwal berikutnya tidak tertahan. Batch tanpa versi baru tidak menulis baris `imports`.
 
 Undangan dan lupa password memakai Supabase Auth. Redirect yang didaftarkan harus mencakup `{asal}/masuk` (asal dari host permintaan, atau `NEXT_PUBLIC_APP_URL`), misalnya `https://jubelio-accurate-staging.vercel.app/masuk` dan nanti `https://ecommerce.asiacommerce.net/masuk`. Tautan itu dibuka di `/masuk` lalu diteruskan ke `/atur-sandi`.

@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { planCancels, planImport } from "@/lib/domain/plan";
+import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { reportOf } from "@/lib/domain/aggregate";
 import { reviewRow } from "@/lib/domain/review-rows";
@@ -262,7 +263,7 @@ export class LocalStore implements DataStore {
       retireIds: [...plan.retireIds, ...cancelPlan.retireIds],
       reviews: [...plan.reviews, ...cancelPlan.reviews],
       unchanged: plan.unchanged,
-    }, record);
+    }, shouldPersistImport(versions.length) ? record : null);
     return {
       importId,
       orders: record.orderCount,

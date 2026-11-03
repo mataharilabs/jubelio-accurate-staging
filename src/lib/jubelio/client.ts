@@ -42,18 +42,23 @@ export class JubelioClient {
     this.tokenAt = Date.now();
   }
 
-  async get<T>(path: string, query?: Record<string, string | number>): Promise<T> {
+  async get<T>(path: string, query?: Record<string, string | number>, deadline?: number): Promise<T> {
     await this.login();
     const url = new URL(`${BASE}${path}`);
     for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, String(value));
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const remaining = deadline ? deadline - Date.now() : 45_000;
+      if (deadline && remaining < 3_000) throw new AppError("Waktu langkah habis.");
       await this.pace();
       const response = await fetch(url, {
         headers: { authorization: this.token ?? "" },
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(Math.min(45_000, Math.max(3_000, remaining))),
       });
       if (response.status === 429) {
-        await new Promise((resolve) => setTimeout(resolve, 60_000));
+        const budget = deadline ? Math.max(0, deadline - Date.now()) : 60_000;
+        const wait = Math.min(60_000, budget);
+        if (wait < 5_000) throw new AppError("Jubelio membatasi permintaan. Coba lagi sebentar.");
+        await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
       if (!response.ok) throw new AppError(`Jubelio menolak ${path} (${response.status}).`);

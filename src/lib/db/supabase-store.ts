@@ -32,6 +32,7 @@ import type {
   VersionSource,
 } from "@/lib/db/types";
 import { commitWithRollback, eachPage, pickLatestRows, supabaseFetch, type RollbackStep } from "@/lib/db/supabase-paging";
+import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { accurateConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 
@@ -506,7 +507,7 @@ export class SupabaseStore implements DataStore {
       fromDay: range.from,
       toDay: range.to,
     };
-    await this.writePlan(merged, record);
+    await this.writePlan(merged, shouldPersistImport(merged.versions.length) ? record : null);
     return {
       importId,
       orders: record.orderCount,
