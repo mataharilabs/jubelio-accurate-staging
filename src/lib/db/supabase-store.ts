@@ -31,6 +31,7 @@ import type {
   SyncState,
   VersionSource,
 } from "@/lib/db/types";
+import { commitWithRollback, eachPage, pickLatestRows, supabaseFetch, type RollbackStep } from "@/lib/db/supabase-paging";
 import { accurateConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 
@@ -61,7 +62,10 @@ function client(): SupabaseClient {
   const url = supabaseUrl();
   const key = supabaseServiceKey();
   if (!url || !key) throw new AppError("Supabase belum dikonfigurasi.");
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: supabaseFetch },
+  });
 }
 
 function explain(error: { message?: string; code?: string } | null, action: string): never {
@@ -170,8 +174,12 @@ export class SupabaseStore implements DataStore {
     const map = new Map<string, OrderLine[]>();
     for (let i = 0; i < versionIds.length; i += 100) {
       const slice = versionIds.slice(i, i + 100);
-      const data = await must(this.sb.from("order_lines").select("*").in("version_id", slice).order("line_no"), "membaca baris");
-      for (const row of (data ?? []) as Row[]) {
+      const data = await eachPage(async (from, to) => {
+        const { data: page, error } = await this.sb.from("order_lines").select("*").in("version_id", slice).order("id").range(from, to);
+        if (error) explain(error, "membaca baris");
+        return (page ?? []) as Row[];
+      });
+      for (const row of data) {
         const id = str(row.version_id);
         const list = map.get(id) ?? [];
         list.push(lineFrom(row));
@@ -187,8 +195,29 @@ export class SupabaseStore implements DataStore {
   }
 
   async currentVersions(): Promise<OrderVersion[]> {
-    const data = await must(this.sb.from("order_versions").select("*").eq("is_current", true), "membaca versi");
-    return this.hydrate((data ?? []) as Row[]);
+    const data = await eachPage(async (from, to) => {
+      const { data: page, error } = await this.sb.from("order_versions").select("*").eq("is_current", true).order("id").range(from, to);
+      if (error) explain(error, "membaca versi");
+      return (page ?? []) as Row[];
+    });
+    return this.hydrate(data);
+  }
+
+  /** Latest version of each order, paging past PostgREST's 1000-row cap. Includes a non-current row when a failed import cleared is_current. */
+  private async latestForOrders(orderNos: string[]): Promise<Map<string, OrderVersion>> {
+    const unique = [...new Set(orderNos.filter(Boolean))];
+    const headers: Row[] = [];
+    for (let i = 0; i < unique.length; i += 80) {
+      const slice = unique.slice(i, i + 80);
+      const page = await eachPage(async (from, to) => {
+        const { data, error } = await this.sb.from("order_versions").select("*").in("no_pesanan", slice).order("id").range(from, to);
+        if (error) explain(error, "membaca versi pesanan");
+        return (data ?? []) as Row[];
+      });
+      headers.push(...page);
+    }
+    const versions = await this.hydrate(pickLatestRows(headers));
+    return new Map(versions.map((version) => [version.noPesanan, version]));
   }
 
   async meta(): Promise<AppMeta> {
@@ -298,30 +327,57 @@ export class SupabaseStore implements DataStore {
   }
 
   private async writePlan(plan: ReturnType<typeof planImport>, record: ImportRecord | null) {
-    if (plan.retireIds.length) {
-      const { error } = await this.sb.from("order_versions").update({ is_current: false }).in("id", plan.retireIds);
-      if (error) explain(error, "menutup versi lama");
+    const steps: RollbackStep[] = [];
+    for (let i = 0; i < plan.retireIds.length; i += 200) {
+      const ids = plan.retireIds.slice(i, i + 200);
+      steps.push({
+        run: async () => {
+          const { error } = await this.sb.from("order_versions").update({ is_current: false }).in("id", ids);
+          if (error) explain(error, "menutup versi lama");
+        },
+        undo: async () => {
+          const { error } = await this.sb.from("order_versions").update({ is_current: true }).in("id", ids);
+          if (error) explain(error, "memulihkan versi lama");
+        },
+      });
     }
     if (record) {
-      const { error } = await this.sb.from("imports").insert({
-        id: record.id,
-        filename: record.filename,
-        source: record.source,
-        created_at: record.createdAt,
-        created_by: record.createdBy,
-        order_count: record.orderCount,
-        line_count: record.lineCount,
-        new_versions: record.newVersions,
-        unchanged: record.unchanged,
-        from_day: record.fromDay,
-        to_day: record.toDay,
+      steps.push({
+        run: async () => {
+          const { error } = await this.sb.from("imports").insert({
+            id: record.id,
+            filename: record.filename,
+            source: record.source,
+            created_at: record.createdAt,
+            created_by: record.createdBy,
+            order_count: record.orderCount,
+            line_count: record.lineCount,
+            new_versions: record.newVersions,
+            unchanged: record.unchanged,
+            from_day: record.fromDay,
+            to_day: record.toDay,
+          });
+          if (error) explain(error, "menyimpan impor");
+        },
+        undo: async () => {
+          const { error } = await this.sb.from("imports").delete().eq("id", record.id);
+          if (error) explain(error, "membatalkan catatan impor");
+        },
       });
-      if (error) explain(error, "menyimpan impor");
     }
     for (let i = 0; i < plan.versions.length; i += 100) {
       const slice = plan.versions.slice(i, i + 100);
-      const { error } = await this.sb.from("order_versions").insert(slice.map(versionRow));
-      if (error) explain(error, "menyimpan versi");
+      const ids = slice.map((version) => version.id);
+      steps.push({
+        run: async () => {
+          const { error } = await this.sb.from("order_versions").insert(slice.map(versionRow));
+          if (error) explain(error, "menyimpan versi");
+        },
+        undo: async () => {
+          const { error } = await this.sb.from("order_versions").delete().in("id", ids);
+          if (error) explain(error, "membatalkan versi baru");
+        },
+      });
       const lineRows = slice.flatMap((version) => version.lines.map((line, index) => ({
         id: line.id,
         version_id: version.id,
@@ -339,32 +395,52 @@ export class SupabaseStore implements DataStore {
         flags: line.flags,
       })));
       if (lineRows.length) {
-        const inserted = await this.sb.from("order_lines").insert(lineRows);
-        if (inserted.error) explain(inserted.error, "menyimpan baris");
+        steps.push({
+          run: async () => {
+            const inserted = await this.sb.from("order_lines").insert(lineRows);
+            if (inserted.error) explain(inserted.error, "menyimpan baris");
+          },
+          undo: async () => {},
+        });
       }
     }
     if (plan.changes.length) {
-      const { error } = await this.sb.from("order_changes").insert(plan.changes.map((change) => ({
-        id: change.id,
-        no_pesanan: change.noPesanan,
-        from_version_id: change.fromVersionId,
-        to_version_id: change.toVersionId,
-        field: change.field,
-        kind: change.kind,
-        old_value: change.oldValue,
-        new_value: change.newValue,
-      })));
-      if (error) explain(error, "menyimpan riwayat perubahan");
+      const ids = plan.changes.map((change) => change.id);
+      steps.push({
+        run: async () => {
+          const { error } = await this.sb.from("order_changes").insert(plan.changes.map((change) => ({
+            id: change.id,
+            no_pesanan: change.noPesanan,
+            from_version_id: change.fromVersionId,
+            to_version_id: change.toVersionId,
+            field: change.field,
+            kind: change.kind,
+            old_value: change.oldValue,
+            new_value: change.newValue,
+          })));
+          if (error) explain(error, "menyimpan riwayat perubahan");
+        },
+        undo: async () => {
+          const { error } = await this.sb.from("order_changes").delete().in("id", ids);
+          if (error) explain(error, "membatalkan riwayat perubahan");
+        },
+      });
     }
     if (plan.reviews.length) {
-      const { error } = await this.sb.from("review_items").upsert(plan.reviews.map((review) => ({
-        kind: review.kind,
-        raw_key: review.rawKey,
-        detail: review.detail,
-        status: "open",
-      })), { onConflict: "kind,raw_key" });
-      if (error) explain(error, "menyimpan antrean review");
+      steps.push({
+        run: async () => {
+          const { error } = await this.sb.from("review_items").upsert(plan.reviews.map((review) => ({
+            kind: review.kind,
+            raw_key: review.rawKey,
+            detail: review.detail,
+            status: "open",
+          })), { onConflict: "kind,raw_key" });
+          if (error) explain(error, "menyimpan antrean review");
+        },
+        undo: async () => {},
+      });
     }
+    await commitWithRollback(steps);
   }
 
   async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null): Promise<ImportResult> {
@@ -383,8 +459,10 @@ export class SupabaseStore implements DataStore {
     by: string | null,
     range: { from: string | null; to: string | null },
   ): Promise<ImportResult> {
-    const currentRows = await this.currentVersions();
-    const current = new Map(currentRows.map((version) => [version.noPesanan, version]));
+    const current = await this.latestForOrders([
+      ...lines.map((line) => line.noPesanan),
+      ...cancels.map((cancel) => cancel.noPesanan),
+    ]);
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
     const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by });
@@ -488,10 +566,14 @@ export class SupabaseStore implements DataStore {
   }
 
   async syncReview(days: string[]): Promise<SyncReviewRow[]> {
-    let query = this.sb.from("order_versions").select("*").eq("is_current", true);
-    if (days.length) query = query.in("order_day", days);
-    const data = await must(query, "membaca antrian sync");
-    const versions = await this.hydrate((data ?? []) as Row[]);
+    const data = await eachPage(async (from, to) => {
+      let query = this.sb.from("order_versions").select("*").eq("is_current", true);
+      if (days.length) query = query.in("order_day", days);
+      const { data: page, error } = await query.order("id").range(from, to);
+      if (error) explain(error, "membaca antrian sync");
+      return (page ?? []) as Row[];
+    });
+    const versions = await this.hydrate(data);
     const nos = versions.map((version) => version.noPesanan);
     const states = nos.length
       ? await must(this.sb.from("sync_states").select("*").in("no_pesanan", nos), "membaca status sync")
