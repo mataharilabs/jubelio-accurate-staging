@@ -59,4 +59,11 @@ describe("monthly HPP", () => {
     expect(refresh.filter((row) => row.periodMonth === "2026-11-01").map((row) => row.sku)).toEqual(["A", "B", "C"]);
     expect(syncWork("2026-12-01", [{ sku: "A", accurateFound: "true" }], covered, "cron").map(encodePending)).toEqual(["2026-12-01|A"]);
   });
+
+  it("retries SKUs that Accurate could not find only on the 1st", () => {
+    const missing = [{ sku: "C", accurateFound: "false" as const }];
+    expect(syncWork("2026-11-04", missing, [], "cron")).toEqual([]);
+    expect(syncWork("2026-11-01", missing, [], "cron").map(encodePending)).toEqual(["2026-10-01|C", "2026-11-01|C"]);
+    expect(syncWork("2026-11-04", missing, [], "gaps").map((row) => row.sku)).toEqual(["C", "C"]);
+  });
 });

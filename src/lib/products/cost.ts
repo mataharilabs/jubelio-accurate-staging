@@ -59,10 +59,15 @@ export function snapshotMonths(today: string): string[] {
 }
 
 /**
- * cron: fill months that have no row, and skip SKUs Accurate already said are missing.
+ * cron: fill months that have no row. SKUs Accurate already marked missing are
+ * retried only when today is the 1st. Other days leave them alone.
  * gaps: the manual button, same fill but it retries SKUs that were missing.
  * refresh: re-read every SKU for the current month. Older months still only fill gaps.
  */
+export function isMonthlyHppDay(today: string): boolean {
+  return /^\d{4}-\d{2}-01$/.test(today);
+}
+
 export function syncWork(
   today: string,
   skus: SkuCostState[],
@@ -70,13 +75,14 @@ export function syncWork(
   mode: "cron" | "gaps" | "refresh",
 ): { periodMonth: string; sku: string }[] {
   const current = monthStart(today);
+  const retryMissing = mode !== "cron" || isMonthlyHppDay(today);
   const has = new Set(covered.map((row) => `${row.periodMonth}|${row.sku}`));
   const work: { periodMonth: string; sku: string }[] = [];
   for (const periodMonth of snapshotMonths(today)) {
     for (const sku of skus) {
       const refreshThisMonth = mode === "refresh" && periodMonth === current;
       if (!refreshThisMonth && has.has(`${periodMonth}|${sku.sku}`)) continue;
-      if (!refreshThisMonth && mode === "cron" && sku.accurateFound === "false") continue;
+      if (!refreshThisMonth && !retryMissing && sku.accurateFound === "false") continue;
       work.push({ periodMonth, sku: sku.sku });
     }
   }
