@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { recordAudit } from "@/lib/access/store";
 import { eachDay } from "@/lib/jubelio/adapter";
-import { continueCron } from "@/lib/jubelio/chain";
 import { latestJob } from "@/lib/jubelio/jobs";
 import { advancePull, continueRunning, startPull } from "@/lib/jubelio/runner";
 import { AppError } from "@/lib/errors";
@@ -32,12 +31,6 @@ export async function POST(request: Request) {
     const step = await advancePull(job.id);
     if (step.busy) throw new AppError("Tarikan sedang berjalan. Tunggu langkah ini selesai.", 409);
     if (step.job.status !== "running") await continueRunning();
-    const running = Boolean(await continueRunning());
-    const secret = process.env.CRON_SECRET?.trim();
-    if (secret && running) {
-      const origin = new URL(request.url).origin;
-      continueCron(`${origin}/api/cron/jubelio?schedule=manual`, `Bearer ${secret}`, 0, true, false);
-    }
     return NextResponse.json({ job: step.job });
   } catch (error) {
     return fail(error);
