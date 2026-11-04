@@ -37,16 +37,17 @@ create table if not exists public.products (
 create table if not exists public.product_costs (
   id uuid primary key default gen_random_uuid(),
   sku text not null references public.products(sku) on delete cascade,
-  cost_date date not null,
+  period_month date not null,
   unit_cost numeric not null,
   source text not null check (source in ('accurate', 'manual')),
   fetched_at timestamptz not null default now(),
   sync_run_id uuid,
   note text not null default '',
-  unique (sku, cost_date, source)
+  unique (sku, period_month, source),
+  constraint product_costs_month_start check (period_month = date_trunc('month', period_month)::date)
 );
 
-create index if not exists product_costs_sku_idx on public.product_costs (sku, cost_date desc, fetched_at desc);
+create index if not exists product_costs_sku_idx on public.product_costs (sku, period_month desc, fetched_at desc);
 
 create table if not exists public.hpp_sync_runs (
   id uuid primary key default gen_random_uuid(),
@@ -61,6 +62,7 @@ create table if not exists public.hpp_sync_runs (
   error_count integer not null default 0,
   error text,
   pending_skus text[] not null default '{}',
+  months text[] not null default '{}',
   lease_token text,
   lease_until timestamptz
 );
@@ -71,13 +73,21 @@ alter table public.product_costs
   add constraint product_costs_sync_run_id_fkey
   foreign key (sync_run_id) references public.hpp_sync_runs(id) on delete set null;
 
--- Latest HPP. Same day: manual wins over Accurate. A newer date wins over both.
-create or replace view public.v_product_cost
-with (security_invoker = true) as
-select distinct on (sku)
-  sku, unit_cost, source, cost_date, fetched_at
-from public.product_costs
-order by sku, cost_date desc, case when source = 'manual' then 0 else 1 end, fetched_at desc;
+-- HPP for a sale month. Manual wins over Accurate in that month. If the month has no row, the newest earlier month is used and carried is true.
+create or replace function public.effective_product_cost(p_sku text, p_as_of date)
+returns table (unit_cost numeric, source text, period_month date, carried boolean)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select c.unit_cost, c.source, c.period_month, c.period_month < date_trunc('month', p_as_of)::date
+  from public.product_costs c
+  where c.sku = p_sku
+    and c.period_month <= date_trunc('month', p_as_of)::date
+  order by c.period_month desc, case when c.source = 'manual' then 0 else 1 end, c.fetched_at desc
+  limit 1;
+$$;
 
 insert into public.products (sku, name, first_sold_at, accurate_found)
 select
@@ -147,9 +157,10 @@ as $$
       s.sku, s.product_name, s.line_qty, s.unit_price, s.sub_total, s.total_nilai_pesanan,
       s.total_diskon, s.unit_diskon, s.revenue_per_unit, s.line_revenue, s.customer_name,
       s.customer_code, s.province, s.city, s.kurir, s.status,
-      c.unit_cost as hpp
+      c.unit_cost as hpp,
+      coalesce(c.carried, false) as hpp_carried
     from public.v_sales_current s
-    left join public.v_product_cost c on c.sku = s.sku
+    left join lateral public.effective_product_cost(s.sku, s.order_day) c on true
     cross join bounds b
     where s.order_day between b.dfrom and b.dto
       and (
@@ -196,6 +207,7 @@ as $$
           kurir,
           status,
           hpp,
+          hpp_carried as "hppCarried",
           case when hpp is null then null else line_revenue - hpp * line_qty end as "grossProfit"
         from filtered
         order by order_day desc, no_pesanan, line_id
@@ -226,12 +238,13 @@ begin
       coalesce(b.name, '(Tanpa brand)') as brand_name,
       s.line_qty,
       s.line_revenue,
-      cost.unit_cost
+      cost.unit_cost,
+      coalesce(cost.carried, false) as carried
     from public.v_sales_current s
     left join public.products pr on pr.sku = s.sku
     left join public.categories c on c.id = pr.category_id
     left join public.brands b on b.id = pr.brand_id
-    left join public.v_product_cost cost on cost.sku = s.sku
+    left join lateral public.effective_product_cost(s.sku, s.order_day) cost on true
     where s.order_day between dfrom and dto
       and (
         coalesce(jsonb_array_length(p->'statuses'), 0) > 0
@@ -264,8 +277,13 @@ begin
       max(brand_name) as brand,
       coalesce(sum(line_qty), 0) as qty,
       coalesce(sum(line_revenue), 0) as net,
-      max(unit_cost) as hpp,
-      case when max(unit_cost) is null then null else coalesce(sum(line_revenue), 0) - max(unit_cost) * coalesce(sum(line_qty), 0) end as profit
+      case
+        when count(unit_cost) = 0 then null
+        when min(unit_cost) = max(unit_cost) then min(unit_cost)
+        else null
+      end as hpp,
+      sum(line_revenue - unit_cost * line_qty) as profit,
+      bool_or(carried) as carried
     from filtered
     group by sku
   ),
@@ -288,7 +306,7 @@ begin
     group by category_name
   ),
   coverage as (
-    select count(*) as skus, count(hpp) as with_hpp from products
+    select count(*) as skus, count(profit) as with_hpp from products
   )
   select jsonb_build_object(
     'coverage', (select jsonb_build_object(
@@ -296,9 +314,9 @@ begin
       'withHpp', with_hpp,
       'percent', case when skus = 0 then 0 else round(100.0 * with_hpp / skus, 1) end
     ) from coverage),
-    'byNet', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit) order by net desc) from products), '[]'::jsonb),
-    'byQty', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit) order by qty desc) from products), '[]'::jsonb),
-    'byProfit', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit) order by profit desc) from products where profit is not null), '[]'::jsonb),
+    'byNet', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit, 'carried', carried) order by net desc) from products), '[]'::jsonb),
+    'byQty', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit, 'carried', carried) order by qty desc) from products), '[]'::jsonb),
+    'byProfit', coalesce((select jsonb_agg(jsonb_build_object('sku', sku, 'name', name, 'category', category, 'brand', brand, 'qty', qty, 'net', net, 'hpp', hpp, 'profit', profit, 'carried', carried) order by profit desc) from products where profit is not null), '[]'::jsonb),
     'brandsByNet', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'qty', qty, 'net', net, 'profit', profit) order by net desc) from brands), '[]'::jsonb),
     'brandsByProfit', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'qty', qty, 'net', net, 'profit', profit) order by profit desc nulls last) from brands where profit is not null), '[]'::jsonb),
     'categoriesByNet', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'qty', qty, 'net', net, 'profit', profit) order by net desc) from categories), '[]'::jsonb),
@@ -316,8 +334,7 @@ alter table public.hpp_sync_runs enable row level security;
 
 revoke all on public.categories, public.brands, public.products, public.product_costs, public.hpp_sync_runs from public, anon;
 grant select, insert, update, delete on public.categories, public.brands, public.products, public.product_costs, public.hpp_sync_runs to authenticated;
-grant select on public.v_product_cost to authenticated;
-grant execute on function public.orders_page(jsonb), public.product_report(jsonb) to authenticated;
+grant execute on function public.orders_page(jsonb), public.product_report(jsonb), public.effective_product_cost(text, date) to authenticated;
 
 drop policy if exists "admin categories" on public.categories;
 drop policy if exists "admin brands" on public.brands;

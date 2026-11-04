@@ -5,8 +5,9 @@ import { api } from "@/lib/api-client";
 import { numId, rp } from "@/lib/format";
 
 type Catalog = { id: string; name: string; active: boolean };
-type Product = { sku: string; name: string; categoryId: string | null; categoryName: string | null; brandId: string | null; brandName: string | null; accurateFound: string; hpp: number | null; hppSource: string | null; hppDate: string | null };
-type Rank = { sku?: string; name: string; category?: string; brand?: string; qty: number; net: number; hpp?: number | null; profit?: number | null };
+type Product = { sku: string; name: string; categoryId: string | null; categoryName: string | null; brandId: string | null; brandName: string | null; accurateFound: string; hpp: number | null; hppSource: string | null; hppDate: string | null; hppCarried?: boolean };
+type Rank = { sku?: string; name: string; category?: string; brand?: string; qty: number; net: number; hpp?: number | null; profit?: number | null; carried?: boolean };
+type HppRun = { id?: string; status?: string; error?: string | null; okCount?: number; notFoundCount?: number; errorCount?: number; startedAt?: string; months?: string[] };
 type Report = { coverage: { skus: number; withHpp: number; percent: number }; byNet: Rank[]; byQty: Rank[]; byProfit: Rank[]; brandsByNet: Rank[]; brandsByProfit: Rank[]; categoriesByNet: Rank[]; categoriesByProfit: Rank[] };
 
 const RANKS: { key: keyof Report; title: string }[] = [
@@ -23,6 +24,18 @@ function gp(row: Rank): string {
   if (row.profit == null) return row.sku ? "HPP belum ada" : "—";
   const pct = row.net ? Math.round((1000 * row.profit) / row.net) / 10 : 0;
   return `${rp(row.profit)} (${pct}%)`;
+}
+
+function hppText(row: Rank): string {
+  if (row.hpp == null && row.profit == null && row.sku) return "HPP belum ada";
+  if (row.hpp == null) return row.profit != null ? "HPP per bulan" : "—";
+  return `${rp(row.hpp)}${row.carried ? " · HPP bulan sebelumnya" : ""}`;
+}
+
+function productHpp(row: Product): string {
+  if (row.hpp == null) return "HPP belum ada";
+  const source = row.hppSource === "manual" ? "manual" : "Accurate";
+  return `${rp(row.hpp)} · ${source}${row.hppCarried ? " · HPP bulan sebelumnya" : ""}`;
 }
 
 export function ProductDashboard() {
@@ -63,7 +76,7 @@ export function ProductDashboard() {
           </div>
           <div className="f"><label>&nbsp;</label><button className="btn sm" onClick={() => { if (!report) return; import("xlsx").then((XLSX) => { const rows = RANKS.flatMap((rank) => ((report[rank.key] as Rank[]) ?? []).map((row) => ({ Peringkat: rank.title, Nama: row.name, SKU: row.sku ?? "", Qty: row.qty, "Revenue bersih": row.net, HPP: row.hpp ?? "", "Laba kotor": row.profit ?? "" }))); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), "Produk"); XLSX.writeFile(book, "produk.xlsx"); }).catch((err: Error) => setError(err.message)); }}>Excel</button></div>
         </div>
-        <div className="note mt">Cakupan HPP {report ? `${report.coverage.percent}% (${report.coverage.withHpp}/${report.coverage.skus} SKU)` : "…"}. RETURNED ikut terhitung. Batal tidak ikut, kecuali dipilih di filter. Laba memakai HPP terbaru untuk semua penjualan.</div>
+        <div className="note mt">Cakupan HPP {report ? `${report.coverage.percent}% (${report.coverage.withHpp}/${report.coverage.skus} SKU)` : "…"}. RETURNED ikut terhitung. Batal tidak ikut, kecuali dipilih di filter. Laba memakai HPP bulan penjualan. Jika bulan itu belum ada, dipakai HPP bulan sebelumnya.</div>
       </div>
       <div className="grid g2 mt">
         {RANKS.map((rank) => {
@@ -80,7 +93,7 @@ export function ProductDashboard() {
                     <td data-label="Nama">{row.name}{row.sku ? <div className="mut">{row.sku}</div> : null}<div style={{ height: 6, background: "var(--line)", marginTop: 4 }}><div style={{ width: `${Math.max(4, ((Number(row.net) || 0) / max) * 100)}%`, height: 6, background: "var(--accent, #4f46e5)" }} /></div></td>
                     <td data-label="Qty" className="n">{numId(row.qty)}</td>
                     <td data-label="Revenue" className="n">{rp(row.net)}</td>
-                    <td data-label="HPP" className="n">{row.hpp == null && row.sku ? "HPP belum ada" : row.hpp == null ? "—" : rp(row.hpp)}</td>
+                    <td data-label="HPP" className="n">{hppText(row)}</td>
                     <td data-label="Laba" className="n">{gp(row)}</td>
                   </tr>
                 ))}
@@ -105,24 +118,30 @@ export function ProductList() {
   const [bulkCategory, setBulkCategory] = useState("");
   const [bulkBrand, setBulkBrand] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const [run, setRun] = useState<{ status?: string; error?: string | null; okCount?: number; notFoundCount?: number } | null>(null);
+  const [run, setRun] = useState<HppRun | null>(null);
+  const [runs, setRuns] = useState<HppRun[]>([]);
   const [configured, setConfigured] = useState(true);
+  const [month, setMonth] = useState("");
+  const [refreshAll, setRefreshAll] = useState(false);
 
-  async function load(nextQ = q, nextFilter = filter) {
+  async function load(nextQ = q, nextFilter = filter, nextMonth = month) {
     const params = new URLSearchParams({ q: nextQ });
+    if (nextMonth) params.set("month", nextMonth);
     if (nextFilter === "noHpp") params.set("noHpp", "1");
     if (nextFilter === "notInAccurate") params.set("notInAccurate", "1");
     if (nextFilter === "incomplete") params.set("incomplete", "1");
     const [products, categoryRows, brandRows, sync] = await Promise.all([
-      api<{ rows: Product[] }>(`/api/products?${params}`),
+      api<{ rows: Product[]; month: string }>(`/api/products?${params}`),
       api<Catalog[]>("/api/catalog/kategori"),
       api<Catalog[]>("/api/catalog/merek"),
-      api<{ run: { status?: string; error?: string | null; okCount?: number; notFoundCount?: number } | null; configured: boolean }>("/api/products/sync"),
+      api<{ run: HppRun | null; runs?: HppRun[]; configured: boolean }>("/api/products/sync"),
     ]);
     setRows(products.rows);
+    if (!nextMonth && products.month) setMonth(products.month.slice(0, 7));
     setCategories(categoryRows);
     setBrands(brandRows);
     setRun(sync.run);
+    setRuns(sync.runs ?? (sync.run ? [sync.run] : []));
     setConfigured(sync.configured);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message));
@@ -149,12 +168,15 @@ export function ProductList() {
               </div>
             </div>
           </div>
+          <div className="f"><label>Bulan HPP</label><input type="month" value={month} onChange={(event) => { setMonth(event.target.value); load(q, filter, event.target.value).catch((error: Error) => setMessage(error.message)); }} /></div>
           <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => setEdit({ sku: "", name: "", unitCost: "" })}>Tambah produk</button></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ run?: { error?: string | null; status?: string } }>("/api/products/sync", { method: "POST" }).then((result) => { setRun(result.run ?? null); if (result.run?.error) setMessage(result.run.error); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP Accurate</button></div>
+          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ run?: HppRun }>("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll }) }).then((result) => { setRun(result.run ?? null); if (result.run?.error && result.run.error !== "Snapshot bulan ini sudah lengkap.") setMessage(result.run.error); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP Accurate</button></div>
+          <label className="btn"><input type="checkbox" checked={refreshAll} onChange={(event) => setRefreshAll(event.target.checked)} /> Perbarui semua SKU bulan ini</label>
           <label className="btn">Impor Excel<input hidden type="file" accept=".xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const form = new FormData(); form.set("file", file); fetch("/api/products/import", { method: "POST", body: form }).then(() => load()); }} /></label>
           <a className="btn" href="/api/products/template">Ekspor mapping</a>
         </div>
         {missing.length ? <div className="note mt">Tidak ada di Accurate: {missing.map((row) => row.sku).join(", ")}</div> : null}
+        {runs.length ? <div className="note mt">{runs.slice(0, 6).map((item) => <div key={item.id ?? item.startedAt}>{item.startedAt ? new Date(item.startedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"} · {item.status === "done" ? "selesai" : item.status === "failed" ? "gagal" : "berjalan"} · {item.okCount ?? 0} HPP, {item.notFoundCount ?? 0} tidak ada, {item.errorCount ?? 0} gagal{item.months?.length ? ` · ${item.months.join(", ")}` : ""}</div>)}</div> : null}
       </div>
       {picked.length ? (
         <div className="card mt filters">
@@ -172,7 +194,7 @@ export function ProductList() {
               <td data-label="Nama">{row.name || "Belum lengkap"}</td>
               <td data-label="Kategori">{row.categoryName || "(Tanpa kategori)"}</td>
               <td data-label="Brand">{row.brandName || "(Tanpa brand)"}</td>
-              <td data-label="HPP">{row.hpp == null ? "HPP belum ada" : `${rp(row.hpp)} · ${row.hppSource === "manual" ? "manual" : "Accurate"}`}</td>
+              <td data-label="HPP">{productHpp(row)}</td>
               <td data-label="Accurate">{row.accurateFound === "false" ? "Tidak ada di Accurate" : row.accurateFound === "true" ? "Ada" : "Belum dicek"}</td>
               <td><button className="btn sm" onClick={() => setEdit({ ...row, unitCost: row.hpp == null ? "" : String(row.hpp) })}>Edit</button></td>
             </tr>
@@ -191,7 +213,7 @@ export function ProductList() {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
             <button className="btn" onClick={() => setEdit(null)}>Batal</button>
-            <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, unitCost: edit.unitCost === "" || edit.unitCost == null ? undefined : Number(edit.unitCost) }) }).then(() => { setEdit(null); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+            <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, periodMonth: month ? `${month}-01` : undefined, unitCost: edit.unitCost === "" || edit.unitCost == null ? undefined : Number(edit.unitCost) }) }).then(() => { setEdit(null); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
           </div>
         </div></div>
       ) : null}

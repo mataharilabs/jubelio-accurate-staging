@@ -28,8 +28,9 @@ describe("Accurate API token", () => {
     });
     const host = await openAccurateHost(fetchImpl, "token", "secret", new Date("2026-11-03T10:00:00.000Z"));
     expect(host).toBe("https://zeus.accurate.id");
-    const cost = await fetchNearestCost(fetchImpl, host, "token", "secret", "SKU-1", new Date("2026-11-03T10:00:00.000Z"));
+    const cost = await fetchNearestCost(fetchImpl, host, "token", "secret", "SKU-1", "01/11/2026", new Date("2026-11-03T10:00:00.000Z"));
     expect(cost).toMatchObject({ found: true, unitCost: 4000, itemId: "3" });
+    expect(String(fetchImpl.mock.calls.find((call) => String(call[0]).includes("get-nearest-cost"))?.[0])).toContain("transDate=01%2F11%2F2026");
   });
 
   it("falls back to item detail when nearest cost has no number", async () => {
@@ -37,7 +38,7 @@ describe("Accurate API token", () => {
       if (String(url).includes("get-nearest-cost")) return Response.json({ s: true, d: { id: 4 } });
       return Response.json({ s: true, d: { hpp: 777, id: 4 } });
     });
-    const cost = await fetchNearestCost(fetchImpl, "https://zeus.accurate.id", "token", "secret", "SKU-2", new Date("2026-11-03T10:00:00.000Z"));
+    const cost = await fetchNearestCost(fetchImpl, "https://zeus.accurate.id", "token", "secret", "SKU-2", "01/10/2026", new Date("2026-11-03T10:00:00.000Z"));
     expect(cost.unitCost).toBe(777);
     expect(String(fetchImpl.mock.calls[1][0])).toContain("item/detail.do");
   });

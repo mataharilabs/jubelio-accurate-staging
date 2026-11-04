@@ -91,10 +91,11 @@ export async function openAccurateHost(fetchImpl: AccurateFetch, token: string, 
   return readDatabaseHost(body);
 }
 
-export async function fetchNearestCost(fetchImpl: AccurateFetch, host: string, token: string, signatureKey: string, sku: string, now = new Date()): Promise<NearestCost> {
+export async function fetchNearestCost(fetchImpl: AccurateFetch, host: string, token: string, signatureKey: string, sku: string, transDate: string, now = new Date()): Promise<NearestCost> {
   const timestamp = now.toISOString();
   const url = new URL("/accurate/api/item/get-nearest-cost.do", host.startsWith("http") ? host : `https://${host}`);
   url.searchParams.set("itemNo", sku);
+  url.searchParams.set("transDate", transDate);
   const response = await send(fetchImpl, url.toString(), {
     method: "GET",
     headers: accurateReadHeaders(token, signatureKey, timestamp),
