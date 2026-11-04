@@ -13,16 +13,17 @@ import {
   pdfSync,
   syncSheet,
 } from "@/lib/export/files";
+import { AppError } from "@/lib/errors";
 import { fail, requirePermission } from "@/lib/http";
 import type { Permission } from "@/lib/auth/permissions";
 
-async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, day: string | null, q: string): Promise<OrderPageRow[]> {
+async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string }): Promise<OrderPageRow[]> {
   const rows: OrderPageRow[] = [];
   let page = 0;
   for (;;) {
-    const result = await store.listOrders({ day, q, page, pageSize: 500 });
+    const result = await store.listOrders({ ...query, page, pageSize: 1000 });
     rows.push(...result.rows);
-    if (page >= result.pages - 1) break;
+    if (!result.rows.length || page >= result.pages - 1) break;
     page += 1;
   }
   return rows;
@@ -36,7 +37,11 @@ export async function POST(request: Request) {
       query?: Partial<DashboardQuery>;
       periods?: { label: string; from: string; to: string }[];
       day?: string | null;
+      from?: string | null;
+      to?: string | null;
+      statuses?: string[];
       q?: string;
+      allowLargePdf?: boolean;
       days?: string[];
       metric?: "net" | "gross";
     };
@@ -47,7 +52,10 @@ export async function POST(request: Request) {
     let buffer: Buffer;
     let filename = "ekspor";
     if (body.target === "orders") {
-      const rows = await allOrderRows(store, body.day || null, body.q ?? "");
+      const rows = await allOrderRows(store, { day: body.day || null, from: body.from, to: body.to, statuses: body.statuses, q: body.q ?? "" });
+      if (format === "pdf" && rows.length > 200 && !body.allowLargePdf) {
+        throw new AppError("PDF terlalu besar untuk filter ini. Unduh Excel agar semua baris ikut.");
+      }
       buffer = format === "pdf" ? await pdfOrders(rows) : ordersSheet(rows);
       filename = "data-pesanan";
     } else if (body.target === "sync") {

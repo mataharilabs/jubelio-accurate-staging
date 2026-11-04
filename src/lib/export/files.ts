@@ -21,6 +21,10 @@ const COLS = [
   "Province",
   "City",
   "Kurir",
+  "Status",
+  "Nama Produk",
+  "HPP",
+  "Laba Kotor",
 ] as const;
 
 export function ordersSheet(rows: OrderPageRow[]): Buffer {
@@ -42,6 +46,10 @@ export function ordersSheet(rows: OrderPageRow[]): Buffer {
     Province: row.province,
     City: row.city,
     Kurir: row.kurir,
+    Status: row.status,
+    "Nama Produk": row.productName,
+    HPP: row.hpp ?? "",
+    "Laba Kotor": row.grossProfit ?? "",
   }));
   const book = XLSX.utils.book_new();
   const sheet = XLSX.utils.json_to_sheet(data, { header: [...COLS] });

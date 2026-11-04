@@ -342,8 +342,30 @@ export class SupabaseStore implements DataStore {
   }
 
   async listOrders(query: OrderQuery): Promise<OrderPage> {
-    const versions = await this.currentVersions();
-    return pageVersions(versions, query);
+    const { data, error } = await this.sb.rpc("orders_page", { p: {
+      day: query.day,
+      from: query.from ?? null,
+      to: query.to ?? null,
+      statuses: query.statuses ?? [],
+      q: query.q,
+      page: query.page,
+      pageSize: query.pageSize,
+    } });
+    if (error) {
+      const text = error.message ?? "";
+      if (error.code === "PGRST202" || /orders_page|does not exist|schema cache/i.test(text)) {
+        throw new AppError("Jalankan supabase/migrations/0005_products.sql di SQL Editor.");
+      }
+      explain(error, "membaca pesanan");
+    }
+    const raw = (data ?? {}) as OrderPage;
+    return {
+      total: Number(raw.total ?? 0),
+      orders: Number(raw.orders ?? 0),
+      page: Number(raw.page ?? 0),
+      pages: Number(raw.pages ?? 1),
+      rows: (raw.rows ?? []).map((row) => ({ ...row, flags: row.flags ?? [], hpp: row.hpp == null ? null : Number(row.hpp), grossProfit: row.grossProfit == null ? null : Number(row.grossProfit) })),
+    };
   }
 
   private async writePlan(plan: ReturnType<typeof planImport>, record: ImportRecord | null) {
@@ -902,48 +924,3 @@ function changeFrom(row: Row): FieldChange {
   };
 }
 
-function pageVersions(versions: OrderVersion[], query: OrderQuery): OrderPage {
-  const q = query.q.trim().toLowerCase();
-  const rows = versions
-    .filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete")
-    .flatMap((version) => version.lines.map((line) => ({ version, line })))
-    .filter(({ version, line }) => {
-      if (query.day && version.day !== query.day) return false;
-      if (!q) return true;
-      return [version.noPesanan, line.sku, line.productName, version.customerName, version.storeName, version.city, version.channel].join(" ").toLowerCase().includes(q);
-    });
-  const pageSize = query.pageSize || 30;
-  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
-  const page = Math.min(Math.max(query.page, 0), pages - 1);
-  return {
-    total: rows.length,
-    orders: new Set(rows.map((row) => row.version.noPesanan)).size,
-    page,
-    pages,
-    rows: rows.slice(page * pageSize, page * pageSize + pageSize).map(({ version, line }) => ({
-      lineId: line.id,
-      versionId: version.id,
-      noPesanan: version.noPesanan,
-      tanggal: version.tanggal,
-      day: version.day,
-      channel: version.channel,
-      storeName: version.storeName,
-      sku: line.sku,
-      productName: line.productName,
-      qty: line.qty,
-      unitPrice: line.unitPrice,
-      subTotal: line.subTotal,
-      totalNilaiPesanan: version.totalNilaiPesanan,
-      totalDiskon: version.totalDiskon,
-      unitDiskon: line.unitDiskon,
-      revenuePerUnit: line.revenuePerUnit,
-      customerName: version.customerName,
-      customerCode: version.customerCode,
-      province: version.province,
-      city: version.city,
-      kurir: version.kurir,
-      status: version.status,
-      flags: line.flags,
-    })),
-  };
-}

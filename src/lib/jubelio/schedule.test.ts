@@ -17,6 +17,7 @@ import {
   CONTINUE_INTERVAL_MS,
   isStepStale,
   orchestrate,
+  nextBackgroundTick,
   planContinue,
   shouldContinueChain,
   shouldPersistImport,
@@ -157,5 +158,13 @@ describe("jubelio cron schedule", () => {
     expect(planContinue([{ status: "running", updatedAt: fresh, leaseUntil: null }], now)).toBe("resume");
     expect(planContinue([{ status: "running", updatedAt: quiet, leaseUntil: held }], now)).toBe("resume");
     expect(planContinue([{ status: "done", updatedAt: quiet, leaseUntil: null }], now)).toBe("idle");
+  });
+
+  it("runs HPP only after the Jubelio job is no longer open", () => {
+    expect(nextBackgroundTick("resume", "resume")).toBe("jubelio");
+    expect(nextBackgroundTick("busy", "resume")).toBe("busy");
+    expect(nextBackgroundTick("idle", "resume")).toBe("hpp");
+    expect(nextBackgroundTick("idle", "busy")).toBe("busy");
+    expect(nextBackgroundTick("idle", "idle")).toBe("idle");
   });
 });

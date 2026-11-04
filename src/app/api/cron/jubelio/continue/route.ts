@@ -1,7 +1,8 @@
 import { after, NextResponse } from "next/server";
 import { openJobs } from "@/lib/jubelio/jobs";
 import { advancePull, continueRunning } from "@/lib/jubelio/runner";
-import { planContinue, STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
+import { nextBackgroundTick, planContinue, STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
+import { advanceHppSync, planHppContinue } from "@/lib/products/hpp-sync";
 
 export const maxDuration = 300;
 
@@ -22,10 +23,12 @@ async function resumeOpen() {
 export async function GET(request: Request) {
   if (!authorized(request)) return NextResponse.json({ error: "Cron tidak diizinkan." }, { status: 401 });
   const jobs = await openJobs();
-  const action = planContinue(jobs, Date.now());
-  // Idle and busy return before waitUntil, so a tick with nothing to do stays cheap.
-  if (action !== "resume") return NextResponse.json({ status: action });
-  const task = resumeOpen();
+  const jubelio = planContinue(jobs, Date.now());
+  // HPP is considered only when no Jubelio job is running or queued.
+  const hpp = jubelio === "idle" ? await planHppContinue() : "idle";
+  const tick = nextBackgroundTick(jubelio, hpp);
+  if (tick === "idle" || tick === "busy") return NextResponse.json({ status: tick });
+  const task = tick === "hpp" ? advanceHppSync(STEP_BUDGET_MS).then(() => undefined) : resumeOpen();
   after(task);
   return NextResponse.json({ accepted: true });
 }
