@@ -1,18 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
   CLAIM_WAIT_MS,
+  DAILY_END_OFFSET,
+  DAILY_START_OFFSET,
   FUNCTION_LIMIT_MS,
   LEASE_MS,
   MAX_CHAIN,
   STALE_JOB_MS,
+  STALE_STEP_MS,
   STEP_BUDGET_MS,
+  WEEKLY_END_OFFSET,
+  WEEKLY_START_OFFSET,
+  YIELD_MS,
   canClaim,
   detailBatchSize,
+  isStepStale,
   orchestrate,
+  shouldArmSuccessor,
   shouldContinueChain,
   shouldPersistImport,
   type ScheduleJob,
 } from "@/lib/jubelio/schedule";
+import { recentDays } from "@/lib/jubelio/adapter";
 
 function job(partial: Partial<ScheduleJob> & Pick<ScheduleJob, "id" | "status" | "days">): ScheduleJob {
   return {
@@ -23,15 +32,37 @@ function job(partial: Partial<ScheduleJob> & Pick<ScheduleJob, "id" | "status" |
 }
 
 describe("jubelio cron schedule", () => {
-  it("fits a 40 minute daily window and a queued weekly window inside one Hobby day", () => {
-    expect(STEP_BUDGET_MS).toBeLessThanOrEqual(FUNCTION_LIMIT_MS - 30_000);
+  it("fits an H-1..H-3 daily window and a queued H-14..H-28 weekly window inside one Hobby day", () => {
+    expect(STEP_BUDGET_MS + YIELD_MS).toBeLessThanOrEqual(FUNCTION_LIMIT_MS - 30_000);
+    expect(YIELD_MS).toBeLessThan(STEP_BUDGET_MS);
     expect(LEASE_MS).toBeGreaterThan(CLAIM_WAIT_MS);
-    expect(LEASE_MS).toBeLessThan(10 * 60_000);
-    const dailyMs = 40 * 60_000;
+    expect(LEASE_MS).toBeLessThan(STALE_STEP_MS);
+    const dailyMs = 20 * 60_000;
     const weeklyMs = 90 * 60_000;
     expect(Math.ceil(dailyMs / STEP_BUDGET_MS)).toBeLessThanOrEqual(MAX_CHAIN);
     expect(Math.ceil(weeklyMs / STEP_BUDGET_MS)).toBeLessThanOrEqual(MAX_CHAIN);
     expect(Math.ceil((dailyMs + weeklyMs) / STEP_BUDGET_MS)).toBeLessThanOrEqual(MAX_CHAIN);
+  });
+
+  it("pulls H-1..H-3 daily and H-14..H-28 weekly, leaving H-4..H-13 uncovered", () => {
+    const today = "2026-11-04";
+    const daily = recentDays(today, DAILY_START_OFFSET, DAILY_END_OFFSET);
+    const weekly = recentDays(today, WEEKLY_START_OFFSET, WEEKLY_END_OFFSET);
+    expect(daily).toEqual(["2026-11-01", "2026-11-02", "2026-11-03"]);
+    expect(weekly).toHaveLength(15);
+    expect(weekly[0]).toBe("2026-10-07");
+    expect(weekly[14]).toBe("2026-10-21");
+    const gap = recentDays(today, 13, 4);
+    const covered = new Set([...daily, ...weekly]);
+    expect(gap).toHaveLength(10);
+    expect(gap.every((day) => !covered.has(day))).toBe(true);
+  });
+
+  it("cannot also cover H-4..H-13 inside the current chain cap", () => {
+    const minutesPerDay = 90 / (WEEKLY_START_OFFSET - WEEKLY_END_OFFSET + 1);
+    const widenedDays = WEEKLY_START_OFFSET - 4 + 1;
+    const steps = Math.ceil(((widenedDays * minutesPerDay + 20) * 60_000) / STEP_BUDGET_MS);
+    expect(steps).toBeGreaterThan(MAX_CHAIN);
   });
 
   it("starts a window when nothing is open", () => {
@@ -111,8 +142,21 @@ describe("jubelio cron schedule", () => {
   });
 
   it("shrinks the detail batch when little time is left in the step", () => {
-    expect(detailBatchSize(STEP_BUDGET_MS)).toBe(8);
+    expect(detailBatchSize(STEP_BUDGET_MS)).toBe(4);
     expect(detailBatchSize(20_000)).toBe(1);
     expect(detailBatchSize(5_000)).toBe(1);
+  });
+
+  it("resumes a running job that has not saved for 10 minutes and still chains when that lease looks busy", () => {
+    const now = Date.parse("2026-11-03T10:43:27.000Z");
+    const fresh = new Date(now - 60_000).toISOString();
+    const quiet = new Date(now - STALE_STEP_MS - 1_000).toISOString();
+    expect(isStepStale(fresh, now)).toBe(false);
+    expect(isStepStale(quiet, now)).toBe(true);
+    expect(shouldArmSuccessor({ busy: false, running: true, stale: false, chain: 0 })).toBe(true);
+    expect(shouldArmSuccessor({ busy: true, running: true, stale: false, chain: 0 })).toBe(false);
+    expect(shouldArmSuccessor({ busy: true, running: false, stale: true, chain: 3 })).toBe(true);
+    expect(shouldArmSuccessor({ busy: false, running: false, stale: false, chain: 0 })).toBe(false);
+    expect(shouldArmSuccessor({ busy: false, running: true, stale: false, chain: MAX_CHAIN })).toBe(false);
   });
 });

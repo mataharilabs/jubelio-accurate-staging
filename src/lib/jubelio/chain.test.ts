@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { continuationHeaders, continuationUrl, continueCron, isProductionHost, postContinuation } from "@/lib/jubelio/chain";
+import { continuationHeaders, continuationRequest, continuationUrl, continueCron, isProductionHost, postContinuation, statusFromHead } from "@/lib/jubelio/chain";
 import { canClaim } from "@/lib/jubelio/schedule";
 
 describe("jubelio cron continuation", () => {
@@ -45,12 +45,12 @@ describe("jubelio cron continuation", () => {
     );
   });
 
-  it("schedules a promise and does not follow redirects", async () => {
+  it("schedules a promise and sends the continuation over the injected transport", async () => {
     delete process.env.VERCEL_URL;
     delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     const seen: Promise<unknown>[] = [];
     let called = "";
-    let redirect: RequestRedirect | undefined;
+    const headers: Record<string, string>[] = [];
     continueCron(
       "https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily",
       "Bearer cron-secret",
@@ -61,37 +61,65 @@ describe("jubelio cron continuation", () => {
         expect(task).toBeInstanceOf(Promise);
         seen.push(task);
       },
-      async (url, init) => {
-        called = String(url);
-        redirect = init?.redirect;
-        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cron-secret");
-        expect(new Headers(init?.headers).get("x-job-chain")).toBe("1");
-        return new Response("{}", { status: 202 });
+      async (url, sent) => {
+        called = url;
+        headers.push(sent);
+        return 202;
       },
     );
     await seen[0];
     expect(called).toBe("https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily");
-    expect(redirect).toBe("manual");
+    expect(headers[0]?.authorization).toBe("Bearer cron-secret");
+    expect(headers[0]?.["x-job-chain"]).toBe("1");
   });
 
-  it("logs only the status when the continuation is redirected to SSO", async () => {
+  it("reads only the status line and does not follow a redirect", () => {
+    const request = continuationRequest(
+      "https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily",
+      continuationHeaders("Bearer cron-secret", 1, "bypass-secret"),
+    );
+    expect(request.host).toBe("ecommerce.asiacommerce.id");
+    expect(request.payload.startsWith("GET /api/cron/jubelio?schedule=daily HTTP/1.1\r\n")).toBe(true);
+    expect(request.payload).toContain("authorization: Bearer cron-secret");
+    expect(statusFromHead("HTTP/1.1 302 Found\r\nLocation: https://vercel.com/sso-api?next=secret\r\n")).toBe(302);
+    expect(statusFromHead("HTTP/1.1 508 Loop Detected\r\n")).toBe(508);
+    expect(statusFromHead("not http")).toBeNull();
+  });
+
+  it("logs only the status when the continuation is redirected or rejected as a loop", async () => {
     const logged: unknown[][] = [];
     const original = console.error;
     console.error = (...args: unknown[]) => { logged.push(args); };
+    const targets: string[] = [];
     try {
-      const status = await postContinuation(
-        async (_url, init) => {
-          expect(init?.redirect).toBe("manual");
-          return new Response("sign in", { status: 302, headers: { location: "https://vercel.com/sso-api?next=secret" } });
-        },
+      const redirected = await postContinuation(
         "https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily",
         continuationHeaders("Bearer cron-secret", 1, "bypass-secret"),
+        async (url) => {
+          targets.push(url);
+          return 302;
+        },
       );
-      expect(status).toBe(302);
+      let loops = 0;
+      const looped = await postContinuation(
+        "https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily",
+        continuationHeaders("Bearer cron-secret", 1, "bypass-secret"),
+        async () => {
+          loops += 1;
+          return 508;
+        },
+      );
+      expect(redirected).toBe(302);
+      expect(looped).toBe(508);
+      expect(loops).toBe(2);
     } finally {
       console.error = original;
     }
-    expect(logged).toEqual([["Rantai cron Jubelio ditolak (302)."]]);
+    expect(targets).toEqual(["https://ecommerce.asiacommerce.id/api/cron/jubelio?schedule=daily"]);
+    expect(logged).toEqual([
+      ["Rantai cron Jubelio ditolak (302)."],
+      ["Rantai cron Jubelio ditolak (508)."],
+    ]);
     expect(JSON.stringify(logged)).not.toContain("bypass-secret");
     expect(JSON.stringify(logged)).not.toContain("sso-api");
   });

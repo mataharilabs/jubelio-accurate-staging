@@ -19,7 +19,7 @@ import {
   bundleMap,
   type PullJob,
 } from "@/lib/jubelio/jobs";
-import { CLAIM_WAIT_MS, detailBatchSize, LEASE_MS, orchestrate, STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
+import { CLAIM_WAIT_MS, detailBatchSize, LEASE_MS, orchestrate, STEP_BUDGET_MS, YIELD_MS } from "@/lib/jubelio/schedule";
 import { rapikan } from "@/lib/cleanup/rapikan";
 import { rapikanMaps } from "@/lib/sample-data";
 
@@ -81,7 +81,7 @@ export async function advancePull(jobId: string, budgetMs = STEP_BUDGET_MS): Pro
       await publishNotice({ kind: "cron", title: "Tarikan Jubelio gagal", body: job.error, data: { jobId } });
       return { job, busy: false };
     }
-    while (Date.now() < deadline && job.status === "running") {
+    while (Date.now() + YIELD_MS < deadline && job.status === "running") {
       const before = JSON.stringify({ day: job.day, page: job.page, pending: job.pendingIds.length, days: job.days.length, list: job.listDone });
       job = await step(job, client, deadline);
       job.leaseToken = token;

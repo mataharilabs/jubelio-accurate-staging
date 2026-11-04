@@ -77,9 +77,11 @@ Jadwal cron (UTC, karena Vercel Cron memakai UTC; WIB = UTC+7):
 
 | Jadwal | WIB | UTC |
 | --- | --- | --- |
-| Harian, tarik ulang H-1 s/d H-7 | 16:00 | `0 9 * * *` |
+| Harian, tarik ulang H-1 s/d H-3 | 16:00 | `0 9 * * *` |
 | Mingguan, Minggu, tarik ulang H-14 s/d H-28 | 23:59 | `59 16 * * 0` |
 
-Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Cron Hobby hanya menyala sekali sehari dan tiap fungsi maksimal 300 detik. Satu langkah memakai 250 detik, lalu `after()` memanggil langkah berikutnya (paling banyak 60 langkah) supaya jendela harian selesai di hari yang sama. Sewa di `jubelio_jobs` menolak dua langkah sekaligus. Jendela mingguan yang datang saat harian masih jalan masuk antrean, bukan ditimpa. Job yang masih `running` setelah 36 jam ditutup agar jadwal berikutnya tidak tertahan. Batch tanpa versi baru tidak menulis baris `imports`.
+H-4 s/d H-13 tidak ditarik cron mana pun. Daftar pesanan hanya disaring `transaction_date`, tanpa filter perubahan, jadi status pesanan di celah itu tidak dicek ulang. Jendela mingguan tidak dilebarkan: H-4 s/d H-28 kira-kira 25 hari dan, bersama harian, melewati batas 60 langkah.
+
+Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang dipilih lewat pipeline impor (`source = api`). Cron Hobby hanya dua jadwal, tiap fungsi maksimal 300 detik. Satu langkah bekerja 150 detik dan berhenti 20 detik sebelum habis, lalu koneksi TLS langsung memanggil langkah berikutnya (paling banyak 60 langkah). `fetch` ke deployment yang sama ditolak Vercel dengan HTTP 508, jadi rantai tidak memakai `fetch`. Setiap hit cron atau rantai melanjutkan job `running` yang tidak tersimpan selama 10 menit, atau job `queued` bila tidak ada yang berjalan. Sewa di `jubelio_jobs` menolak dua langkah sekaligus. Jendela mingguan yang datang saat harian masih jalan masuk antrean, bukan ditimpa. Job yang masih `running` setelah 36 jam ditutup agar jadwal berikutnya tidak tertahan. Batch tanpa versi baru tidak menulis baris `imports`. Satu pesanan tetap punya satu versi berjalan.
 
 Undangan dan lupa password memakai Supabase Auth. Redirect yang didaftarkan harus mencakup `{asal}/masuk` (asal dari host permintaan, atau `NEXT_PUBLIC_APP_URL`), misalnya `https://jubelio-accurate-staging.vercel.app/masuk` dan nanti `https://ecommerce.asiacommerce.net/masuk`. Tautan itu dibuka di `/masuk` lalu diteruskan ke `/atur-sandi`.
