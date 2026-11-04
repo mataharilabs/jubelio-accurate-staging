@@ -63,6 +63,8 @@ Migrasi tambahan, setelah `0002_ecommerce.sql`:
 select vault.create_secret('<<CRON_SECRET dari Vercel>>', 'cron_secret', 'Jubelio continue cron');
 ```
 
+7. `supabase/migrations/0007_product_names.sql` — kolom `products.name_source` dan tabel `product_name_runs`. Nama produk baru diambil dari master item Jubelio. Backfill jalan otomatis lewat `GET /api/cron/jubelio/continue` saat tidak ada job Jubelio dan HPP sedang diam, atau lewat `POST /api/products/names` (izin `products.manage`, atau `Authorization: Bearer $CRON_SECRET`). Tidak menyentuh `product_costs`, `batches`, atau `sales_lines`.
+
 Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
 
 ```sql
