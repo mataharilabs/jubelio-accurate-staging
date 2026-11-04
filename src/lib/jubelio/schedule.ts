@@ -106,6 +106,21 @@ export type ContinueJob = {
  * What the external continue hit may do. It never starts a new date window.
  * A fresh lease means another step is already working, so this hit stays cheap.
  */
+/**
+ * Jubelio wins the tick. HPP runs only when no Jubelio job is running or queued,
+ * so it starts after the daily pull is no longer in progress.
+ */
+export function nextBackgroundTick(
+  jubelio: "idle" | "busy" | "resume",
+  hpp: "idle" | "busy" | "resume",
+): "jubelio" | "hpp" | "idle" | "busy" {
+  if (jubelio === "resume") return "jubelio";
+  if (jubelio === "busy") return "busy";
+  if (hpp === "resume") return "hpp";
+  if (hpp === "busy") return "busy";
+  return "idle";
+}
+
 export function planContinue(jobs: ContinueJob[], now: number): "idle" | "busy" | "resume" {
   const running = jobs.find((job) => job.status === "running");
   if (running) {

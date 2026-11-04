@@ -17,11 +17,19 @@ async function queueFor(mode: "cron" | "gaps" | "refresh", now = new Date()): Pr
 }
 
 export async function hppSyncNeeded(now = new Date()): Promise<boolean> {
-  if (!accurateApiConfigured()) return false;
+  return (await planHppContinue(now.getTime())) === "resume";
+}
+
+/** A running HPP step with a fresh lease is busy. Gaps, including a run already queued, are resume. */
+export async function planHppContinue(now = Date.now()): Promise<"idle" | "busy" | "resume"> {
+  if (!accurateApiConfigured()) return "idle";
   const current = await latestHppRun();
-  if (current?.status === "running") return true;
-  const queued = await queueFor("cron", now);
-  return queued.pending.length > 0;
+  if (current?.status === "running") {
+    if (current.leaseUntil && Date.parse(current.leaseUntil) > now && current.pendingSkus.length) return "busy";
+    return current.pendingSkus.length ? "resume" : "idle";
+  }
+  const queued = await queueFor("cron", new Date(now));
+  return queued.pending.length ? "resume" : "idle";
 }
 
 export async function beginHppSync(trigger: "manual" | "cron", by: string | null, options: { refreshAll?: boolean } = {}): Promise<HppRun> {

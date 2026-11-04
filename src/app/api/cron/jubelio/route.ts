@@ -2,6 +2,7 @@ import { after, NextResponse } from "next/server";
 import { recentDays } from "@/lib/jubelio/adapter";
 import { advancePull, beginScheduledPull, continueRunning } from "@/lib/jubelio/runner";
 import { DAILY_END_OFFSET, DAILY_START_OFFSET, STEP_BUDGET_MS, WEEKLY_END_OFFSET, WEEKLY_START_OFFSET } from "@/lib/jubelio/schedule";
+import { beginHppSync, hppSyncNeeded } from "@/lib/products/hpp-sync";
 
 export const maxDuration = 300;
 
@@ -28,6 +29,11 @@ async function runCron(request: Request) {
   if (!job) return { status: "idle" as const };
   const step = await advancePull(job.id, STEP_BUDGET_MS);
   if (!step.busy && step.job.status !== "running") await continueRunning();
+  // HPP starts only once this daily pull, and anything queued behind it, is no longer running.
+  // The 5-minute continue route does the HPP work. This process does not fetch itself.
+  if (schedule === "daily" && !step.busy && !(await continueRunning()) && await hppSyncNeeded()) {
+    await beginHppSync("cron", null);
+  }
   return { id: step.job.id, status: step.job.status, stats: step.job.stats, day: step.job.day, busy: step.busy };
 }
 

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { continueCron } from "@/lib/jubelio/chain";
 import { fail, requirePermission } from "@/lib/http";
 import { advanceHppSync, beginHppSync } from "@/lib/products/hpp-sync";
 import { listHppRuns } from "@/lib/products/service";
@@ -22,11 +21,8 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({})) as { refreshAll?: boolean };
     const run = await beginHppSync("manual", session.email, { refreshAll: body.refreshAll === true });
     if (run.status !== "running") return NextResponse.json({ run });
+    // One step here. The 5-minute continue route takes the rest when no Jubelio job is open.
     const step = await advanceHppSync();
-    const secret = process.env.CRON_SECRET?.trim();
-    if (secret && step.run.status === "running" && !step.busy) {
-      continueCron(new URL("/api/cron/hpp", request.url).toString(), `Bearer ${secret}`, 0, true, false);
-    }
     return NextResponse.json({ run: step.run });
   } catch (error) {
     return fail(error);
