@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
-import { chooseProductName, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
+import { chooseProductName, classifyNameUpdate, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
 import { costForMonth, monthStart, type CostPoint, type CostSource } from "@/lib/products/cost";
 
 export type CatalogItem = { id: string; name: string; active: boolean };
@@ -328,7 +328,7 @@ export type NameTarget = { sku: string; name: string; updatedBy: string | null; 
 export async function listNameTargets(): Promise<NameTarget[]> {
   if (!supabaseConfigured()) {
     return readFile().products
-      .filter((row) => row.nameSource == null && mayReplaceName(row.updatedBy))
+      .filter((row) => mayReplaceName(row.updatedBy) && (row.nameSource == null || (row.nameSource === "line" && row.jubelioItemId == null)))
       .map((row) => ({ sku: row.sku, name: row.name, updatedBy: row.updatedBy ?? null, jubelioItemId: row.jubelioItemId ?? null, nameSource: row.nameSource ?? null }));
   }
   const { data, error } = await client().from("products").select("sku, name, updated_by, jubelio_item_id, name_source").order("sku");
@@ -339,7 +339,8 @@ export async function listNameTargets(): Promise<NameTarget[]> {
   return (data ?? []).flatMap((row) => {
     const updatedBy = row.updated_by ? String(row.updated_by) : null;
     const nameSource = row.name_source === "item" || row.name_source === "line" ? row.name_source : null;
-    if (nameSource != null || !mayReplaceName(updatedBy)) return [];
+    const needsLookup = nameSource == null || (nameSource === "line" && row.jubelio_item_id == null);
+    if (!needsLookup || !mayReplaceName(updatedBy)) return [];
     return [{ sku: String(row.sku), name: String(row.name ?? ""), updatedBy, jubelioItemId: row.jubelio_item_id == null ? null : Number(row.jubelio_item_id), nameSource }];
   });
 }
@@ -349,15 +350,21 @@ export async function readNameTarget(sku: string): Promise<NameTarget | null> {
   return rows.find((row) => row.sku === sku) ?? null;
 }
 
-export async function applyItemName(input: { sku: string; name: string; itemId: number | null; source: "item" | "line" }): Promise<"changed" | "fallback" | "skipped"> {
+export async function applyItemName(input: { sku: string; name: string; itemId: number | null; source: "item" | "line" }): Promise<"changed" | "fallback" | "unchanged" | "skipped"> {
   const current = await readNameTarget(input.sku);
   if (!current || !mayReplaceName(current.updatedBy)) return "skipped";
   const before = current.name;
+  const nextName = input.name.trim() || before;
+  const outcome = classifyNameUpdate(
+    { name: before, itemId: current.jubelioItemId },
+    { name: nextName, itemId: input.itemId, source: input.source },
+  );
+  if (outcome === "unchanged" && current.nameSource === input.source) return "unchanged";
   if (!supabaseConfigured()) {
-    await saveNamedProduct({ ...input, name: input.name.trim() || before });
+    await saveNamedProduct({ ...input, name: nextName });
   } else {
     const { error } = await client().from("products").update({
-      name: input.name.trim() || before,
+      name: nextName,
       jubelio_item_id: input.itemId,
       name_source: input.source,
       updated_by: "jubelio",
@@ -368,8 +375,7 @@ export async function applyItemName(input: { sku: string; name: string; itemId: 
       fail(error, "menyimpan nama produk");
     }
   }
-  if (input.source === "line") return "fallback";
-  return before !== input.name || current.jubelioItemId == null ? "changed" : "changed";
+  return outcome;
 }
 
 export async function productReport(payload: Record<string, unknown>): Promise<unknown> {

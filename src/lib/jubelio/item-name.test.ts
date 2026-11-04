@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseProductName, itemIdentityFromDetail, itemNameFromPayload, matchItemByCode, mayReplaceName, productSeedsFromOrders } from "@/lib/jubelio/item-name";
+import { chooseProductName, classifyLookup, classifyNameUpdate, itemIdentityFromDetail, itemNameFromPayload, matchItemByCode, mayReplaceName, productSeedsFromOrders } from "@/lib/jubelio/item-name";
 
 describe("Jubelio item name", () => {
   it("reads only the name field and ignores the rest of the payload", () => {
@@ -19,6 +19,29 @@ describe("Jubelio item name", () => {
     expect(found).toEqual({ id: 9, name: "Nama master" });
     expect(Object.keys(found ?? {})).toEqual(["id", "name"]);
     expect(matchItemByCode(body, "TIDAK-ADA")).toBeNull();
+    const grouped = {
+      data: [{
+        item_group_id: 1931,
+        item_name: "Nama grup",
+        thumbnail: "https://secret.example/group.jpg",
+        variants: [
+          { item_id: 1, item_code: "LAIN", item_name: "Lain", thumbnail: "https://secret.example/a.jpg" },
+          { item_id: 2976, item_code: "A2143", sell_price: 3600000, barcode: 128124871847 },
+        ],
+      }],
+    };
+    const variant = matchItemByCode(grouped, "A2143");
+    expect(variant).toEqual({ id: 2976, name: "Nama grup" });
+    expect(Object.keys(variant ?? {})).toEqual(["id", "name"]);
+    expect(JSON.stringify(variant)).not.toContain("secret");
+    expect(matchItemByCode({
+      data: [{
+        item_id: 7,
+        item_code: "BDL",
+        item_name: "Paket",
+        bundles: [{ item_id: 70, item_code: "40100083-01", item_name: "Bee & Flower Cendana", qty: 4 }],
+      }],
+    }, "40100083-01")).toEqual({ id: 70, name: "Bee & Flower Cendana" });
     const detail = itemIdentityFromDetail({ item_id: 9, item_name: "Nama master", bundles: [{ item_code: "X" }] });
     expect(detail).toEqual({ id: 9, name: "Nama master" });
   });
@@ -44,5 +67,17 @@ describe("Jubelio item name", () => {
     expect(mayReplaceName(null)).toBe(true);
     expect(mayReplaceName("jubelio")).toBe(true);
     expect(mayReplaceName("admin@example.com")).toBe(false);
+  });
+
+  it("counts a real change, a miss, and a failed lookup separately", () => {
+    const current = { name: "Nama pesanan", itemId: null as number | null };
+    expect(classifyNameUpdate(current, { name: "Nama master", itemId: 9, source: "item" })).toBe("changed");
+    expect(classifyNameUpdate(current, { name: "Nama pesanan", itemId: 9, source: "item" })).toBe("changed");
+    expect(classifyNameUpdate({ name: "Nama master", itemId: 9 }, { name: "Nama master", itemId: 9, source: "item" })).toBe("unchanged");
+    expect(classifyNameUpdate(current, { name: "Nama pesanan", itemId: null, source: "line" })).toBe("fallback");
+    expect(classifyLookup({ failed: true, identity: null })).toBe("error");
+    expect(classifyLookup({ failed: false, identity: null })).toBe("missing");
+    expect(classifyLookup({ failed: false, identity: { id: 9, name: null } })).toBe("item");
+    expect(classifyLookup({ failed: false, identity: { id: 9, name: "Nama master" } })).toBe("item");
   });
 });
