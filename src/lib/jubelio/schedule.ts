@@ -1,16 +1,34 @@
-/** Hobby plan: one cron trigger per day, each invocation capped at 300s. */
+/** Hobby plan: two cron triggers, each invocation capped at 300s. */
 
 export const FUNCTION_LIMIT_MS = 300_000;
-/** Stop the step early so the lease can be released and the next invocation dispatched. */
-export const STEP_BUDGET_MS = 250_000;
+/**
+ * Work budget inside one invocation. The lease is released before the function
+ * ends, and the whole invocation must stay under FUNCTION_LIMIT_MS.
+ */
+export const STEP_BUDGET_MS = 150_000;
+/** Do not start another Jubelio call when less than this remains in the budget. */
+export const YIELD_MS = 20_000;
 /** A killed invocation stops refreshing this, so the next claimant is not locked out for long. */
 export const LEASE_MS = 45_000;
 /** How long a successor waits for the previous step's release to commit. */
 export const CLAIM_WAIT_MS = 8_000;
-/** Enough continuations for a slow 7-day pull plus a weekly window queued behind it. */
-export const MAX_CHAIN = 60;
+/**
+ * Headroom for one H-1..H-3 daily window plus one H-4..H-28 weekly window
+ * at the 150s step size. The external continue job does not stop at this number.
+ */
+export const MAX_CHAIN = 100;
 export const STALE_JOB_MS = 36 * 60 * 60 * 1000;
-export const DETAIL_CHUNK = 8;
+/** Resume a running job that has not saved for this long. */
+export const STALE_STEP_MS = 10 * 60 * 1000;
+/** Supabase pg_cron calls the continue route on this interval. It does not start a new window. */
+export const CONTINUE_INTERVAL_MS = 5 * 60 * 1000;
+export const DETAIL_CHUNK = 4;
+/** Daily Vercel cron re-pulls H-1 through H-3. */
+export const DAILY_START_OFFSET = 3;
+export const DAILY_END_OFFSET = 1;
+/** Sunday Vercel cron re-pulls H-4 through H-28, which closes the gap after the daily window. */
+export const WEEKLY_START_OFFSET = 28;
+export const WEEKLY_END_OFFSET = 4;
 
 export type ScheduleJob = {
   id: string;
@@ -71,6 +89,32 @@ export function canClaim(job: { status: string; leaseUntil: string | null; lease
 
 export function shouldContinueChain(input: { busy: boolean; running: boolean; chain: number }): boolean {
   return !input.busy && input.running && Number.isFinite(input.chain) && input.chain >= 0 && input.chain < MAX_CHAIN;
+}
+
+export function isStepStale(updatedAt: string, now: number): boolean {
+  const updated = Date.parse(updatedAt);
+  return Number.isFinite(updated) && now - updated >= STALE_STEP_MS;
+}
+
+export type ContinueJob = {
+  status: "queued" | "running" | "done" | "failed";
+  updatedAt: string;
+  leaseUntil: string | null;
+};
+
+/**
+ * What the external continue hit may do. It never starts a new date window.
+ * A fresh lease means another step is already working, so this hit stays cheap.
+ */
+export function planContinue(jobs: ContinueJob[], now: number): "idle" | "busy" | "resume" {
+  const running = jobs.find((job) => job.status === "running");
+  if (running) {
+    const leaseHeld = Boolean(running.leaseUntil && Date.parse(running.leaseUntil) > now);
+    if (leaseHeld && !isStepStale(running.updatedAt, now)) return "busy";
+    return "resume";
+  }
+  if (jobs.some((job) => job.status === "queued")) return "resume";
+  return "idle";
 }
 
 export function shouldPersistImport(newVersions: number): boolean {

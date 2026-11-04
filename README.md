@@ -56,6 +56,11 @@ Migrasi tambahan, setelah `0002_ecommerce.sql`:
 
 3. `supabase/migrations/0003_phase1.sql` — peran, pengguna aplikasi, audit, notifikasi, job tarikan Jubelio. Tidak membuat user auth dan tidak menyentuh `batches` / `sales_lines`.
 4. `supabase/migrations/0004_jubelio_job_lease.sql` — status `queued`, kolom sewa `lease_token` / `lease_until`, fungsi `claim_jubelio_job`, dan satu job `running` pada satu waktu. Wajib sebelum cron harian berikutnya. Tidak mengubah `batches` / `sales_lines`.
+6. `supabase/migrations/0006_jubelio_continue_cron.sql` — `pg_cron` tiap 5 menit memanggil `GET /api/cron/jubelio/continue`. Nomor 0005 adalah migrasi produk di PR lain. Tidak mengubah data pesanan. Aktifkan dulu ekstensi `pg_cron` dan `pg_net`. Secret tidak ada di file ini. Setelah migrasi, masukkan sendiri (jangan dicetak):
+
+```sql
+select vault.create_secret('<<CRON_SECRET dari Vercel>>', 'cron_secret', 'Jubelio continue cron');
+```
 
 Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
 
@@ -77,9 +82,12 @@ Jadwal cron (UTC, karena Vercel Cron memakai UTC; WIB = UTC+7):
 
 | Jadwal | WIB | UTC |
 | --- | --- | --- |
-| Harian, tarik ulang H-1 s/d H-7 | 16:00 | `0 9 * * *` |
-| Mingguan, Minggu, tarik ulang H-14 s/d H-28 | 23:59 | `59 16 * * 0` |
+| Harian, tarik ulang H-1 s/d H-3 | 16:00 | `0 9 * * *` |
+| Mingguan, Minggu, tarik ulang H-4 s/d H-28 | 23:59 | `59 16 * * 0` |
+| Lanjutkan job yang masih terbuka | tiap 5 menit | `pg_cron`, bukan Vercel |
 
-Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang sama lewat pipeline impor (`source = api`). Cron Hobby hanya menyala sekali sehari dan tiap fungsi maksimal 300 detik. Satu langkah memakai 250 detik, lalu `after()` memanggil langkah berikutnya (paling banyak 60 langkah) supaya jendela harian selesai di hari yang sama. Sewa di `jubelio_jobs` menolak dua langkah sekaligus. Jendela mingguan yang datang saat harian masih jalan masuk antrean, bukan ditimpa. Job yang masih `running` setelah 36 jam ditutup agar jadwal berikutnya tidak tertahan. Batch tanpa versi baru tidak menulis baris `imports`.
+Dua cron Vercel saja yang membuka jendela tanggal baru. `pg_cron` hanya melanjutkan job `running` (termasuk yang tidak tersimpan selama 10 menit) atau menaikkan job `queued` bila tidak ada yang berjalan. Kalau tidak ada job terbuka, hit itu langsung selesai. Daftar pesanan disaring `transaction_date`. Harian dan mingguan bersama-sama menutup H-1 s/d H-28.
+
+Tombol **Tarik dari Jubelio** di halaman Sync menjalankan rentang yang dipilih lewat pipeline impor (`source = api`). Satu langkah bekerja 150 detik dan berhenti 20 detik sebelum habis. Aplikasi tidak memanggil dirinya sendiri: `fetch` ke deployment yang sama ditolak Vercel dengan HTTP 508. Langkah berikutnya datang dari `pg_cron`. Sewa di `jubelio_jobs` menolak dua langkah sekaligus. Jendela mingguan yang datang saat harian masih jalan masuk antrean, bukan ditimpa. Job yang masih `running` setelah 36 jam ditutup agar jadwal berikutnya tidak tertahan. Batch tanpa versi baru tidak menulis baris `imports`. Satu pesanan tetap punya satu versi berjalan.
 
 Undangan dan lupa password memakai Supabase Auth. Redirect yang didaftarkan harus mencakup `{asal}/masuk` (asal dari host permintaan, atau `NEXT_PUBLIC_APP_URL`), misalnya `https://jubelio-accurate-staging.vercel.app/masuk` dan nanti `https://ecommerce.asiacommerce.net/masuk`. Tautan itu dibuka di `/masuk` lalu diteruskan ke `/atur-sandi`.

@@ -1,8 +1,7 @@
 import { after, NextResponse } from "next/server";
 import { recentDays } from "@/lib/jubelio/adapter";
-import { chainNext } from "@/lib/jubelio/chain";
 import { advancePull, beginScheduledPull, continueRunning } from "@/lib/jubelio/runner";
-import { STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
+import { DAILY_END_OFFSET, DAILY_START_OFFSET, STEP_BUDGET_MS, WEEKLY_END_OFFSET, WEEKLY_START_OFFSET } from "@/lib/jubelio/schedule";
 
 export const maxDuration = 300;
 
@@ -20,21 +19,16 @@ function wibToday(): string {
 async function runCron(request: Request) {
   const url = new URL(request.url);
   const schedule = url.searchParams.get("schedule") === "weekly" ? "weekly" : "daily";
-  const chain = Number(request.headers.get("x-job-chain") ?? "0");
   const today = wibToday();
-  const days = schedule === "weekly" ? recentDays(today, 28, 14) : recentDays(today, 7, 1);
-  const job = chain === 0
-    ? await beginScheduledPull(schedule, `cron:${schedule}`, days)
-    : await continueRunning();
+  const days = schedule === "weekly"
+    ? recentDays(today, WEEKLY_START_OFFSET, WEEKLY_END_OFFSET)
+    : recentDays(today, DAILY_START_OFFSET, DAILY_END_OFFSET);
+  // Only the two Vercel crons reach this route. They are allowed to open a new window.
+  const job = await beginScheduledPull(schedule, `cron:${schedule}`, days);
   if (!job) return { status: "idle" as const };
   const step = await advancePull(job.id, STEP_BUDGET_MS);
   if (!step.busy && step.job.status !== "running") await continueRunning();
-  const running = step.busy ? false : Boolean(await continueRunning());
-  const secret = process.env.CRON_SECRET?.trim();
-  const authorization = secret ? `Bearer ${secret}` : (request.headers.get("authorization") ?? "");
-  const chained = chainNext(url, authorization, Number.isFinite(chain) && chain > 0 ? chain : 0, running, step.busy);
-  if (chained) await chained;
-  return { id: step.job.id, status: step.job.status, stats: step.job.stats, day: step.job.day, busy: step.busy, chain: Number.isFinite(chain) ? chain : 0 };
+  return { id: step.job.id, status: step.job.status, stats: step.job.stats, day: step.job.day, busy: step.busy };
 }
 
 export async function GET(request: Request) {
