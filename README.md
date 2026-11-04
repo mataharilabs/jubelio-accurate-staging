@@ -63,7 +63,7 @@ Migrasi tambahan, setelah `0002_ecommerce.sql`:
 select vault.create_secret('<<CRON_SECRET dari Vercel>>', 'cron_secret', 'Jubelio continue cron');
 ```
 
-7. `supabase/migrations/0007_product_names.sql` — kolom `products.name_source` dan tabel `product_name_runs`. Nama produk baru diambil dari master item Jubelio. Daftar item Jubelio menyimpan SKU di `variants`, bukan di baris grup. Backfill mengulang baris `name_source = line` yang belum punya `jubelio_item_id`. Jalan otomatis lewat `GET /api/cron/jubelio/continue` saat tidak ada job Jubelio dan HPP sedang diam, atau lewat `POST /api/products/names` (izin `products.manage`, atau `Authorization: Bearer $CRON_SECRET`). Tidak menyentuh `product_costs`, `batches`, atau `sales_lines`.
+7. `supabase/migrations/0007_product_names.sql` — kolom `products.name_source` dan tabel `product_name_runs`. Nama produk baru diambil dari master item Jubelio. Daftar item Jubelio memakai `page`, `pageSize`, dan `q`, dan menyimpan SKU di `variants`. Setelah satu run selesai, cron tidak mengulang SKU `name_source = line` yang sudah dicoba, kecuali ada SKU baru atau tombol/manual. Tiga run berturut-turut yang hanya berisi error HTTP menghentikan cron sampai dipicu manual atau deploy berikutnya. `Waktu langkah habis` tidak dihitung sebagai error. Jalan otomatis lewat `GET /api/cron/jubelio/continue` saat tidak ada job Jubelio dan HPP sedang diam, atau lewat `POST /api/products/names` (izin `products.manage`, atau `Authorization: Bearer $CRON_SECRET`). Tidak menyentuh `product_costs`, `batches`, atau `sales_lines`.
 
 Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
 
