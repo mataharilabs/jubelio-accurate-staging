@@ -5,7 +5,7 @@ import { recordAudit } from "@/lib/access/store";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { JubelioClient } from "@/lib/jubelio/client";
-import { itemIdentityFromDetail, matchItemByCode } from "@/lib/jubelio/item-name";
+import { classifyLookup, itemIdentityFromDetail, matchItemByCode } from "@/lib/jubelio/item-name";
 import { applyItemName, listNameTargets, type ItemLookup } from "@/lib/products/service";
 
 const FILE = path.join(process.cwd(), "data", "product-name-runs.json");
@@ -119,14 +119,10 @@ export function itemLookup(client: JubelioClient, deadline?: number): ItemLookup
       }
     },
     async byCode(sku) {
-      try {
-        const query = sku.replace(/[^A-Za-z0-9 ._-]/g, "").trim();
-        if (!query) return null;
-        const body = await client.get("/inventory/items/", { q: query, page: 1, page_size: 20 }, deadline);
-        return matchItemByCode(body, sku);
-      } catch {
-        return null;
-      }
+      const query = sku.replace(/[^A-Za-z0-9 ._-]/g, "").trim();
+      if (!query) return null;
+      const body = await client.get("/inventory/items/", { q: query, page: 1, page_size: 20 }, deadline);
+      return matchItemByCode(body, sku);
     },
   };
 }
@@ -199,21 +195,35 @@ export async function advanceNameSync(budgetMs: number, trigger: "manual" | "cro
         run.skippedCount += 1;
         continue;
       }
+      let found: { id: number; name: string | null } | null = null;
+      let failed = false;
       try {
-        const found = await lookup.byCode(sku);
+        found = await lookup.byCode(sku);
+      } catch (error) {
+        failed = true;
+        run.error = error instanceof Error ? error.message : "Gagal membaca item Jubelio.";
+      }
+      const kind = classifyLookup({ failed, identity: found });
+      if (kind === "error") {
+        run.errorCount += 1;
+        run.pendingSkus.push(sku);
+        break;
+      }
+      try {
+        const masterName = found?.name?.trim() || "";
         const outcome = await applyItemName({
           sku,
-          name: found?.name?.trim() || target.name,
-          itemId: found?.id ?? null,
-          source: found?.name?.trim() ? "item" : "line",
+          name: masterName || target.name,
+          itemId: kind === "item" ? found?.id ?? null : null,
+          source: kind === "item" ? "item" : "line",
         });
         if (outcome === "changed") run.changedCount += 1;
         else if (outcome === "fallback") run.fallbackCount += 1;
         else run.skippedCount += 1;
-        if (outcome !== "skipped") remember(run, { sku, before: target.name, after: found?.name?.trim() || target.name, source: found?.name?.trim() ? "item" : "line" });
+        if (outcome === "changed" || outcome === "fallback") remember(run, { sku, before: target.name, after: masterName || target.name, source: kind === "item" ? "item" : "line" });
       } catch (error) {
         run.errorCount += 1;
-        run.error = error instanceof Error ? error.message : "Gagal membaca item Jubelio.";
+        run.error = error instanceof Error ? error.message : "Gagal menyimpan nama produk.";
         run.pendingSkus.push(sku);
         break;
       }

@@ -35,18 +35,65 @@ export function itemIdentityFromDetail(body: unknown): ItemIdentity | null {
   return { id, name: itemNameFromPayload(row) };
 }
 
-/** Exact item_code match from a list payload. Other fields are dropped. */
+function nestedItemRows(row: Record<string, unknown>): Record<string, unknown>[] {
+  const nested: Record<string, unknown>[] = [];
+  for (const value of Object.values(row)) {
+    if (!Array.isArray(value)) continue;
+    for (const child of value) {
+      const record = asRecord(child);
+      if (!record) continue;
+      if ("item_code" in record || "item_id" in record || "variants" in record || "bundles" in record) nested.push(record);
+    }
+  }
+  return nested;
+}
+
+function matchInRow(row: Record<string, unknown>, wanted: string, inheritedName: string | null): ItemIdentity | null {
+  const ownName = itemNameFromPayload(row) || inheritedName;
+  const code = typeof row.item_code === "string" ? row.item_code.trim() : "";
+  if (code === wanted) {
+    const id = numericId(row.item_id ?? row.id);
+    if (id != null) return { id, name: ownName };
+  }
+  for (const child of nestedItemRows(row)) {
+    const found = matchInRow(child, wanted, ownName);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Exact item_code match. Jubelio's list groups SKUs under variants[]
+ * (and bundle components under bundles[]). Only id and name are returned.
+ * A variant with no name of its own uses the group item_name.
+ */
 export function matchItemByCode(body: unknown, sku: string): ItemIdentity | null {
   const wanted = sku.trim();
   if (!wanted) return null;
   for (const row of rowsOf(body)) {
-    const code = typeof row.item_code === "string" ? row.item_code.trim() : "";
-    if (code !== wanted) continue;
-    const id = numericId(row.item_id ?? row.id);
-    if (id == null) continue;
-    return { id, name: itemNameFromPayload(row) };
+    const found = matchInRow(row, wanted, null);
+    if (found) return found;
   }
   return null;
+}
+
+/** HTTP/parse failures are errors. A parsed list with no exact SKU is a real miss. An id with no name is still a hit. */
+export function classifyLookup(input: { failed: boolean; identity: ItemIdentity | null }): "error" | "missing" | "item" {
+  if (input.failed) return "error";
+  if (input.identity?.id == null) return "missing";
+  return "item";
+}
+
+/** 'changed' only when the stored name or item id is different. A miss is 'fallback'. */
+export function classifyNameUpdate(
+  current: { name: string; itemId: number | null },
+  next: { name: string; itemId: number | null; source: "item" | "line" },
+): "changed" | "fallback" | "unchanged" {
+  if (next.source === "line") return "fallback";
+  const name = next.name.trim() || current.name;
+  const nameChanged = name !== current.name;
+  const idChanged = (current.itemId ?? null) !== (next.itemId ?? null);
+  return nameChanged || idChanged ? "changed" : "unchanged";
 }
 
 export type ProductSeed = { sku: string; lineName: string; itemId: number | null };
