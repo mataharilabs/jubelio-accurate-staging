@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
+import { chooseProductName, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
 import { costForMonth, monthStart, type CostPoint, type CostSource } from "@/lib/products/cost";
 
 export type CatalogItem = { id: string; name: string; active: boolean };
@@ -20,6 +21,9 @@ export type ProductRow = {
   hppDate: string | null;
   hppCarried: boolean;
   firstSoldAt: string | null;
+  jubelioItemId?: number | null;
+  nameSource?: "item" | "line" | null;
+  updatedBy?: string | null;
 };
 export type ProductQuery = { q?: string; categoryId?: string; brandId?: string; noHpp?: boolean; notInAccurate?: boolean; incomplete?: boolean; month?: string };
 export type HppRun = {
@@ -190,6 +194,9 @@ export async function saveProduct(input: { sku: string; name: string; categoryId
       hppDate: existing?.hppDate ?? null,
       hppCarried: existing?.hppCarried ?? false,
       firstSoldAt: existing?.firstSoldAt ?? null,
+      jubelioItemId: existing?.jubelioItemId ?? null,
+      nameSource: existing?.nameSource ?? null,
+      updatedBy: by,
     };
     db.products = existing ? db.products.map((row) => row.sku === sku ? next : row) : [...db.products, next];
     writeFile(db);
@@ -225,23 +232,144 @@ export async function saveManualCost(sku: string, unitCost: number, note: string
   if (error) fail(error, "menyimpan HPP manual");
 }
 
-export async function ensureProducts(lines: { sku: string; name: string }[]): Promise<string[]> {
-  const incoming = new Map<string, string>();
+export type ItemLookup = {
+  byId(itemId: number): Promise<ItemIdentity | null>;
+  byCode(sku: string): Promise<ItemIdentity | null>;
+};
+
+export async function ensureProducts(lines: ProductSeed[], lookup?: ItemLookup): Promise<string[]> {
+  const incoming = new Map<string, ProductSeed>();
   for (const line of lines) {
     const sku = line.sku.trim();
-    if (!sku) continue;
-    if (!incoming.has(sku) && line.name.trim()) incoming.set(sku, line.name.trim());
-    else if (!incoming.has(sku)) incoming.set(sku, "");
+    if (!sku || incoming.has(sku)) continue;
+    incoming.set(sku, { sku, lineName: line.lineName.trim(), itemId: line.itemId });
   }
   if (!incoming.size) return [];
   const existing = new Set((await listProducts()).map((row) => row.sku));
   const created: string[] = [];
-  for (const [sku, name] of incoming) {
-    if (existing.has(sku)) continue;
-    await saveProduct({ sku, name, active: true }, "jubelio");
-    created.push(sku);
+  for (const seed of incoming.values()) {
+    if (existing.has(seed.sku)) continue;
+    try {
+      let master: ItemIdentity | null = null;
+      if (lookup && seed.itemId) master = await lookup.byId(seed.itemId);
+      if (lookup && !master?.name) {
+        const byCode = await lookup.byCode(seed.sku);
+        if (byCode) master = { id: byCode.id, name: master?.name ?? byCode.name };
+      }
+      const chosen = chooseProductName({ masterName: master?.name ?? null, lineName: seed.lineName });
+      await saveNamedProduct({ sku: seed.sku, name: chosen.name, itemId: master?.id ?? seed.itemId, source: chosen.source });
+      created.push(seed.sku);
+    } catch {
+      try {
+        await saveNamedProduct({ sku: seed.sku, name: seed.lineName, itemId: seed.itemId, source: "line" });
+        created.push(seed.sku);
+      } catch {
+        // A product-table failure must not escape into the order import.
+      }
+    }
   }
   return created;
+}
+
+export async function saveNamedProduct(input: { sku: string; name: string; itemId: number | null; source: "item" | "line" }): Promise<void> {
+  const sku = input.sku.trim();
+  if (!sku) return;
+  const name = input.name.trim() || sku;
+  if (!supabaseConfigured()) {
+    const db = readFile();
+    const existing = db.products.find((row) => row.sku === sku);
+    const next: ProductRow = {
+      sku,
+      name,
+      categoryId: existing?.categoryId ?? null,
+      categoryName: existing?.categoryName ?? null,
+      brandId: existing?.brandId ?? null,
+      brandName: existing?.brandName ?? null,
+      active: existing?.active ?? true,
+      accurateFound: existing?.accurateFound ?? "unknown",
+      hpp: existing?.hpp ?? null,
+      hppSource: existing?.hppSource ?? null,
+      hppDate: existing?.hppDate ?? null,
+      hppCarried: existing?.hppCarried ?? false,
+      firstSoldAt: existing?.firstSoldAt ?? null,
+      jubelioItemId: input.itemId,
+      nameSource: input.source,
+      updatedBy: "jubelio",
+    };
+    db.products = existing ? db.products.map((row) => row.sku === sku ? next : row) : [...db.products, next];
+    writeFile(db);
+    return;
+  }
+  const payload = {
+    sku,
+    name,
+    active: true,
+    jubelio_item_id: input.itemId,
+    name_source: input.source,
+    updated_by: "jubelio",
+    updated_at: new Date().toISOString(),
+  };
+  const wrote = await client().from("products").upsert(payload);
+  if (!wrote.error) return;
+  if (!/name_source|schema cache/i.test(wrote.error.message ?? "")) fail(wrote.error, "menyimpan nama produk");
+  const retry = await client().from("products").upsert({
+    sku: payload.sku,
+    name: payload.name,
+    active: payload.active,
+    jubelio_item_id: payload.jubelio_item_id,
+    updated_by: payload.updated_by,
+    updated_at: payload.updated_at,
+  });
+  if (retry.error) fail(retry.error, "menyimpan nama produk");
+}
+
+export type NameTarget = { sku: string; name: string; updatedBy: string | null; jubelioItemId: number | null; nameSource: "item" | "line" | null };
+
+export async function listNameTargets(): Promise<NameTarget[]> {
+  if (!supabaseConfigured()) {
+    return readFile().products
+      .filter((row) => row.nameSource == null && mayReplaceName(row.updatedBy))
+      .map((row) => ({ sku: row.sku, name: row.name, updatedBy: row.updatedBy ?? null, jubelioItemId: row.jubelioItemId ?? null, nameSource: row.nameSource ?? null }));
+  }
+  const { data, error } = await client().from("products").select("sku, name, updated_by, jubelio_item_id, name_source").order("sku");
+  if (error) {
+    if (/name_source|schema cache/i.test(error.message ?? "")) throw new AppError("Jalankan supabase/migrations/0007_product_names.sql di SQL Editor.");
+    fail(error, "membaca nama produk");
+  }
+  return (data ?? []).flatMap((row) => {
+    const updatedBy = row.updated_by ? String(row.updated_by) : null;
+    const nameSource = row.name_source === "item" || row.name_source === "line" ? row.name_source : null;
+    if (nameSource != null || !mayReplaceName(updatedBy)) return [];
+    return [{ sku: String(row.sku), name: String(row.name ?? ""), updatedBy, jubelioItemId: row.jubelio_item_id == null ? null : Number(row.jubelio_item_id), nameSource }];
+  });
+}
+
+export async function readNameTarget(sku: string): Promise<NameTarget | null> {
+  const rows = await listNameTargets();
+  return rows.find((row) => row.sku === sku) ?? null;
+}
+
+export async function applyItemName(input: { sku: string; name: string; itemId: number | null; source: "item" | "line" }): Promise<"changed" | "fallback" | "skipped"> {
+  const current = await readNameTarget(input.sku);
+  if (!current || !mayReplaceName(current.updatedBy)) return "skipped";
+  const before = current.name;
+  if (!supabaseConfigured()) {
+    await saveNamedProduct({ ...input, name: input.name.trim() || before });
+  } else {
+    const { error } = await client().from("products").update({
+      name: input.name.trim() || before,
+      jubelio_item_id: input.itemId,
+      name_source: input.source,
+      updated_by: "jubelio",
+      updated_at: new Date().toISOString(),
+    }).eq("sku", input.sku);
+    if (error) {
+      if (/name_source|schema cache/i.test(error.message ?? "")) throw new AppError("Jalankan supabase/migrations/0007_product_names.sql di SQL Editor.");
+      fail(error, "menyimpan nama produk");
+    }
+  }
+  if (input.source === "line") return "fallback";
+  return before !== input.name || current.jubelioItemId == null ? "changed" : "changed";
 }
 
 export async function productReport(payload: Record<string, unknown>): Promise<unknown> {

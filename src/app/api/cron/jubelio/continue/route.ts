@@ -3,6 +3,7 @@ import { openJobs } from "@/lib/jubelio/jobs";
 import { advancePull, continueRunning } from "@/lib/jubelio/runner";
 import { nextBackgroundTick, planContinue, STEP_BUDGET_MS } from "@/lib/jubelio/schedule";
 import { advanceHppSync, planHppContinue } from "@/lib/products/hpp-sync";
+import { advanceNameSync, planNameContinue } from "@/lib/products/name-sync";
 
 export const maxDuration = 300;
 
@@ -24,11 +25,16 @@ export async function GET(request: Request) {
   if (!authorized(request)) return NextResponse.json({ error: "Cron tidak diizinkan." }, { status: 401 });
   const jobs = await openJobs();
   const jubelio = planContinue(jobs, Date.now());
-  // HPP is considered only when no Jubelio job is running or queued.
+  // HPP, then item names, only when no Jubelio job is running or queued.
   const hpp = jubelio === "idle" ? await planHppContinue() : "idle";
-  const tick = nextBackgroundTick(jubelio, hpp);
+  const names = jubelio === "idle" && hpp === "idle" ? await planNameContinue() : "idle";
+  const tick = nextBackgroundTick(jubelio, hpp, names);
   if (tick === "idle" || tick === "busy") return NextResponse.json({ status: tick });
-  const task = tick === "hpp" ? advanceHppSync(STEP_BUDGET_MS).then(() => undefined) : resumeOpen();
+  const task = tick === "hpp"
+    ? advanceHppSync(STEP_BUDGET_MS).then(() => undefined)
+    : tick === "names"
+      ? advanceNameSync(STEP_BUDGET_MS).then(() => undefined)
+      : resumeOpen();
   after(task);
   return NextResponse.json({ accepted: true });
 }

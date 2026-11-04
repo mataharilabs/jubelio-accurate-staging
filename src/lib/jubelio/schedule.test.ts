@@ -166,5 +166,8 @@ describe("jubelio cron schedule", () => {
     expect(nextBackgroundTick("idle", "resume")).toBe("hpp");
     expect(nextBackgroundTick("idle", "busy")).toBe("busy");
     expect(nextBackgroundTick("idle", "idle")).toBe("idle");
+    expect(nextBackgroundTick("idle", "idle", "resume")).toBe("names");
+    expect(nextBackgroundTick("idle", "resume", "resume")).toBe("hpp");
+    expect(nextBackgroundTick("resume", "idle", "resume")).toBe("jubelio");
   });
 });
