@@ -8,7 +8,8 @@ export async function GET(request: Request) {
     const store = await getStore();
     const no = new URL(request.url).searchParams.get("no");
     if (no) return NextResponse.json(await store.orderHistory(no));
-    return NextResponse.json(await store.syncHistory());
+    const [history, log] = await Promise.all([store.syncHistory(), store.listSyncLog()]);
+    return NextResponse.json({ ...history, log });
   } catch (error) {
     return fail(error);
   }

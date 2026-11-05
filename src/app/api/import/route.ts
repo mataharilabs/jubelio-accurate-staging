@@ -16,15 +16,16 @@ export async function POST(request: Request) {
     const mode = String(form.get("mode") ?? "raw");
     const from = String(form.get("from") ?? "") || null;
     const to = String(form.get("to") ?? "") || null;
+    const duplicate = form.get("duplicate") === "skip" ? "skip" : "overwrite";
     const buffer = Buffer.from(await file.arrayBuffer());
     const store = await getStore();
     if (mode === "clean") {
-      const result = await store.importCleanLines(readCleanWorkbook(buffer), file.name, "clean", session.email);
+      const result = await store.importCleanLines(readCleanWorkbook(buffer), file.name, "clean", session.email, duplicate);
       await recordAudit({ actorEmail: session.email, action: "import.clean", entity: "import", entityId: result.importId, before: null, after: result });
       return NextResponse.json(result);
     }
     const cleaned = rapikan(readSalesWorkbook(buffer), await rapikanMaps(store), { from, to });
-    const result = await store.importRawLines(cleaned.lines, cleaned.droppedCancels, file.name, session.email, { from, to });
+    const result = await store.importRawLines(cleaned.lines, cleaned.droppedCancels, file.name, session.email, { from, to }, "raw", duplicate);
     await recordAudit({ actorEmail: session.email, action: "import.raw", entity: "import", entityId: result.importId, before: null, after: result });
     return NextResponse.json({ ...result, missingKeys: cleaned.missingKeys, unmappedChannels: cleaned.unmappedChannels });
   } catch (error) {

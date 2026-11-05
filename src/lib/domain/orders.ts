@@ -72,6 +72,11 @@ export function versionFromCleanLines(
     qty: orderLines.reduce((sum, line) => sum + line.qty, 0),
     revenue: orderRevenue(orderLines),
     lines: orderLines,
+    dataStatus: "active",
+    contentUpdatedAt: input.createdAt,
+    returnCase: null,
+    parentNoPesanan: null,
+    lossSibling: false,
   };
 }
 

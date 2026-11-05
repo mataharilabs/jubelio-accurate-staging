@@ -6,6 +6,7 @@ import { planCancels, planImport } from "@/lib/domain/plan";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { matchesOrderFilter } from "@/lib/domain/order-filter";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
+import { buildReturnVersions, canSoftDeleteOrder } from "@/lib/domain/phase3";
 import { reportOf } from "@/lib/domain/aggregate";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
@@ -50,6 +51,7 @@ type LocalDB = {
   reviews: ReviewItem[];
   settings: AppSettings;
   tokens: AccurateTokens | null;
+  syncLogs?: { at: string; actor: string | null; action: "sync" | "ignore" | "blocked"; noPesanan: string; note: string }[];
 };
 
 const FILE = path.join(process.cwd(), "data", "store-v2.json");
@@ -78,6 +80,7 @@ function load(): LocalDB {
     const parsed = JSON.parse(readFileSync(FILE, "utf8")) as LocalDB;
     if (parsed.version !== 2) return emptyDb();
     parsed.settings = sanitizeSettings(parsed.settings);
+    parsed.syncLogs = parsed.syncLogs ?? [];
     return parsed;
   } catch {
     return emptyDb();
@@ -166,6 +169,11 @@ export class LocalStore implements DataStore {
   async listOrders(query: OrderQuery): Promise<OrderPage> {
     const rows = this.db.versions
       .filter((version) => version.isCurrent && version.source !== "cancel" && version.source !== "manual_delete")
+      .filter((version) => {
+        const status = version.dataStatus ?? "active";
+        const want = query.dataStatus ?? "active";
+        return want === "all" || status === want;
+      })
       .flatMap((version) => version.lines.map((line) => ({ version, line })))
       .filter(({ version, line }) => matchesOrderFilter({
         day: version.day,
@@ -178,7 +186,7 @@ export class LocalStore implements DataStore {
         city: version.city,
         channel: version.channel,
       }, query));
-    const pageSize = query.pageSize || 30;
+    const pageSize = query.pageSize || 25;
     const pages = Math.max(1, Math.ceil(rows.length / pageSize));
     const page = Math.min(query.page, pages - 1);
     const slice = rows.slice(page * pageSize, page * pageSize + pageSize);
@@ -211,6 +219,13 @@ export class LocalStore implements DataStore {
         kurir: version.kurir,
         status: version.status,
         flags: line.flags,
+        dataStatus: version.dataStatus ?? "active",
+        contentUpdatedAt: version.contentUpdatedAt ?? version.createdAt,
+        returnCase: version.returnCase ?? null,
+        parentNoPesanan: version.parentNoPesanan ?? null,
+        lossSibling: Boolean(version.lossSibling),
+        syncedAt: this.db.syncStates.find((item) => item.noPesanan === version.noPesanan)?.syncedAt ?? null,
+        synced: this.db.syncStates.some((item) => item.noPesanan === version.noPesanan && (item.lastSyncStatus === "tersinkron" || Boolean(item.accurateId))),
       })),
     };
   }
@@ -227,12 +242,12 @@ export class LocalStore implements DataStore {
     this.persist();
   }
 
-  async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null): Promise<ImportResult> {
-    return this.importLines(lines, [], filename, source, by, { from: null, to: null });
+  async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null, duplicate: "overwrite" | "skip" = "overwrite"): Promise<ImportResult> {
+    return this.importLines(lines, [], filename, source, by, { from: null, to: null }, duplicate);
   }
 
-  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source: "raw" | "api" = "raw"): Promise<ImportResult> {
-    return this.importLines(lines, cancels, filename, source, by, range);
+  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source: "raw" | "api" = "raw", duplicate: "overwrite" | "skip" = "overwrite"): Promise<ImportResult> {
+    return this.importLines(lines, cancels, filename, source, by, range, duplicate);
   }
 
   private async importLines(
@@ -242,11 +257,12 @@ export class LocalStore implements DataStore {
     source: ImportRecord["source"],
     by: string | null,
     range: { from: string | null; to: string | null },
+    duplicate: "overwrite" | "skip" = "overwrite",
   ): Promise<ImportResult> {
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
     const current = currentMap(this.db);
-    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by });
+    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate });
     const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
     const versions = [...plan.versions, ...cancelPlan.versions];
     const record: ImportRecord = {
@@ -312,6 +328,7 @@ export class LocalStore implements DataStore {
       revenue: orderRevenue(lines),
       totalNilaiPesanan: lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0),
       totalDiskon: previous.totalDiskon,
+      contentUpdatedAt: new Date().toISOString(),
     };
     if (!diffVersions(previous, next).length) throw new AppError("Tidak ada perubahan.");
     this.replaceCurrent(previous, next);
@@ -373,6 +390,7 @@ export class LocalStore implements DataStore {
       existing.decision = decision;
       existing.decisionVersionId = version.id;
       existing.updatedAt = now;
+      if (decision === "ignored") existing.syncedAt = now;
     } else {
       this.db.syncStates.push({
         noPesanan,
@@ -383,9 +401,10 @@ export class LocalStore implements DataStore {
         decision,
         decisionVersionId: version.id,
         updatedAt: now,
+        syncedAt: decision === "ignored" ? now : null,
       });
     }
-    void by;
+    if (decision === "ignored") await this.logSync({ actor: by, action: "ignore", noPesanan, note: "Abaikan sync" });
     this.persist();
   }
 
@@ -431,11 +450,15 @@ export class LocalStore implements DataStore {
         decision: null,
         decisionVersionId: null,
         updatedAt: batch.createdAt,
+        syncedAt: batch.createdAt,
       };
       if (state) Object.assign(state, next);
       else this.db.syncStates.push(next);
     }
     this.db.syncBatches.unshift(batch);
+    for (const item of items) {
+      if (item.status === "berhasil") await this.logSync({ actor: by, action: "sync", noPesanan: item.noPesanan, note });
+    }
     this.persist();
     return batch;
   }
@@ -455,7 +478,8 @@ export class LocalStore implements DataStore {
   async listChannelMaps() { return this.db.channels; }
   async saveChannelMap(row: Omit<ChannelMapRow, "id"> & { id?: string }) {
     const id = row.id || crypto.randomUUID();
-    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    const mappedAt = row.channel.trim() && row.store.trim() && !row.needsReview ? new Date().toISOString() : null;
+    const next = { ...row, id, needsReview: row.needsReview ?? false, mappedAt };
     const index = this.db.channels.findIndex((item) => item.id === id || (item.channelRaw === row.channelRaw && item.storeRaw === row.storeRaw));
     if (index >= 0) this.db.channels[index] = { ...this.db.channels[index], ...next, id: this.db.channels[index].id };
     else this.db.channels.push(next);
@@ -469,7 +493,8 @@ export class LocalStore implements DataStore {
   async saveProvinceMap(row: Omit<ProvinceMapRow, "id"> & { id?: string }) {
     const id = row.id || crypto.randomUUID();
     const index = this.db.provinces.findIndex((item) => item.id === id || item.raw === row.raw);
-    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    const mappedAt = row.official.trim() && !row.needsReview ? new Date().toISOString() : null;
+    const next = { ...row, id, needsReview: row.needsReview ?? false, mappedAt };
     if (index >= 0) this.db.provinces[index] = { ...this.db.provinces[index], ...next, id: this.db.provinces[index].id };
     else this.db.provinces.push(next);
     this.persist();
@@ -478,7 +503,8 @@ export class LocalStore implements DataStore {
   async saveCityMap(row: Omit<CityMapRow, "id"> & { id?: string }) {
     const id = row.id || crypto.randomUUID();
     const index = this.db.cities.findIndex((item) => item.id === id || (item.provinceRaw === row.provinceRaw && item.cityRaw === row.cityRaw));
-    const next = { ...row, id, needsReview: row.needsReview ?? false };
+    const mappedAt = row.official.trim() && !row.needsReview ? new Date().toISOString() : null;
+    const next = { ...row, id, needsReview: row.needsReview ?? false, mappedAt };
     if (index >= 0) this.db.cities[index] = { ...this.db.cities[index], ...next, id: this.db.cities[index].id };
     else this.db.cities.push(next);
     this.persist();
@@ -494,8 +520,9 @@ export class LocalStore implements DataStore {
       if (existing) {
         existing.bobot = row.bobot;
         existing.updatedAt = now;
+        existing.confirmedAt = now;
       } else {
-        this.db.weights.push({ id: crypto.randomUUID(), bundleKey: key, bobot: row.bobot, updatedAt: now });
+        this.db.weights.push({ id: crypto.randomUUID(), bundleKey: key, bobot: row.bobot, updatedAt: now, confirmedAt: now });
       }
     }
     this.persist();
@@ -507,6 +534,7 @@ export class LocalStore implements DataStore {
     if (patch.bundleKey) row.bundleKey = patch.bundleKey.trim();
     if (patch.bobot != null) row.bobot = patch.bobot;
     row.updatedAt = new Date().toISOString();
+    row.confirmedAt = row.updatedAt;
     this.persist();
     return row;
   }
@@ -533,5 +561,40 @@ export class LocalStore implements DataStore {
   }
   async currentVersions() {
     return this.db.versions.filter((version) => version.isCurrent);
+  }
+
+  async logSync(entry: { actor: string | null; action: "sync" | "ignore" | "blocked"; noPesanan: string; note?: string }): Promise<void> {
+    this.db.syncLogs = this.db.syncLogs ?? [];
+    this.db.syncLogs.unshift({ at: new Date().toISOString(), actor: entry.actor, action: entry.action, noPesanan: entry.noPesanan, note: entry.note ?? "" });
+    this.persist();
+  }
+
+  async listSyncLog() {
+    return this.db.syncLogs ?? [];
+  }
+
+  async setDataStatus(noPesanan: string, dataStatus: "active" | "deleted"): Promise<void> {
+    const current = currentMap(this.db).get(noPesanan);
+    if (!current) throw new AppError("Pesanan tidak ditemukan.");
+    if (dataStatus === "deleted") {
+      const state = this.db.syncStates.find((row) => row.noPesanan === noPesanan);
+      const gate = canSoftDeleteOrder({ synced: Boolean(state && (state.lastSyncStatus === "tersinkron" || state.accurateId)) });
+      if (!gate.ok) throw new AppError(gate.reason ?? "Tidak bisa dihapus.");
+    }
+    current.dataStatus = dataStatus;
+    this.persist();
+  }
+
+  async applyReturn(noPesanan: string, input: { status: string; returnCase: 1 | 2 | 3 | null; lost: { sku: string; qty: number }[] }, by: string): Promise<void> {
+    const previous = currentMap(this.db).get(noPesanan);
+    if (!previous) throw new AppError("Pesanan tidak ditemukan.");
+    const sibling = currentMap(this.db).get(`${previous.noPesanan}-R`) ?? null;
+    const built = buildReturnVersions(previous, sibling, { ...input, by, now: new Date().toISOString() });
+    if (built.error) throw new AppError(built.error);
+    const [original, nextSibling] = built.versions;
+    this.replaceCurrent(previous, original);
+    if (nextSibling && sibling) this.replaceCurrent(sibling, nextSibling);
+    else if (nextSibling) this.db.versions.push(nextSibling);
+    this.persist();
   }
 }

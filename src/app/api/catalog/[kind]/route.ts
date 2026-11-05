@@ -23,8 +23,8 @@ export async function POST(request: Request, context: { params: Promise<{ kind: 
   try {
     const session = await requirePermission("products.manage");
     const { kind } = await context.params;
-    const body = await request.json() as { id?: string; name?: string; active?: boolean };
-    await saveCatalog(kindOf(kind), { id: body.id, name: body.name ?? "", active: body.active }, session.email);
+    const body = await request.json() as { id?: string; name?: string; active?: boolean; replacementId?: string | null };
+    await saveCatalog(kindOf(kind), { id: body.id, name: body.name ?? "", active: body.active, replacementId: body.replacementId }, session.email);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return fail(error);

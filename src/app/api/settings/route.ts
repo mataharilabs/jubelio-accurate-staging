@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import type { AppSettings } from "@/lib/db/types";
-import { accurateConfigured, accurateEnv, missingAccurateEnv } from "@/lib/env";
+import { accurateConfigured, accurateEnv, missingAccurateEnv, salesPushEnabled } from "@/lib/env";
 import { recordAudit } from "@/lib/access/store";
 import { fail, requirePermission } from "@/lib/http";
 
@@ -21,6 +21,7 @@ export async function GET() {
         expiresAt: tokens?.expiresAt ?? null,
         redirectUri: accurateEnv().redirectUri,
         databaseIdFromEnv: Boolean(accurateEnv().databaseId),
+        salesPush: salesPushEnabled(),
       },
     });
   } catch (error) {

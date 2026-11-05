@@ -15,6 +15,11 @@ export class JubelioClient {
     return Boolean(this.email && this.password);
   }
 
+  /** Confirms the account can log in. The token is not returned. */
+  async probe(): Promise<void> {
+    await this.login();
+  }
+
   private async pace() {
     const now = Date.now();
     this.stamps = this.stamps.filter((stamp) => now - stamp < 60_000);

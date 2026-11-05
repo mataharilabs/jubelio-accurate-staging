@@ -64,6 +64,7 @@ select vault.create_secret('<<CRON_SECRET dari Vercel>>', 'cron_secret', 'Jubeli
 ```
 
 7. `supabase/migrations/0007_product_names.sql` — kolom `products.name_source` dan tabel `product_name_runs`. Nama produk baru diambil dari master item Jubelio. Daftar item Jubelio memakai `page`, `pageSize`, dan `q`, dan menyimpan SKU di `variants`. Setelah satu run selesai, cron tidak mengulang SKU `name_source = line` yang sudah dicoba, kecuali ada SKU baru atau tombol/manual. Tiga run berturut-turut yang hanya berisi error HTTP menghentikan cron sampai dipicu manual atau deploy berikutnya. `Waktu langkah habis` tidak dihitung sebagai error. Jalan otomatis lewat `GET /api/cron/jubelio/continue` saat tidak ada job Jubelio dan HPP sedang diam, atau lewat `POST /api/products/names` (izin `products.manage`, atau `Authorization: Bearer $CRON_SECRET`). Tidak menyentuh `product_costs`, `batches`, atau `sales_lines`.
+8. `supabase/migrations/0008_phase3.sql` — tanggal mapping, HPP `updated_at`, `synced_at`, status data pesanan, kasus retur, tautan pesanan `-R`, dan `sync_log`. Tidak menghapus data dan tidak menyentuh `batches` / `sales_lines`. Pengiriman jual/retur ke Accurate tetap mati sampai `ACCURATE_SALES_PUSH=enabled`.
 
 Peran `Super Admin` ikut terisi. Untuk mengangkat login yang sudah ada (ganti emailnya):
 

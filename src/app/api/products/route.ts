@@ -16,6 +16,8 @@ export async function GET(request: Request) {
       noHpp: url.searchParams.get("noHpp") === "1",
       notInAccurate: url.searchParams.get("notInAccurate") === "1",
       incomplete: url.searchParams.get("incomplete") === "1",
+      confirmed: url.searchParams.get("confirmed") === "yes" || url.searchParams.get("confirmed") === "no" ? url.searchParams.get("confirmed") as "yes" | "no" : undefined,
+      active: url.searchParams.get("dataStatus") === "deleted" || url.searchParams.get("dataStatus") === "all" ? url.searchParams.get("dataStatus") as "deleted" | "all" : "active",
       month,
     });
     return NextResponse.json({ rows, incomplete: rows.filter(productIncomplete).length, month });

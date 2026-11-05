@@ -8,6 +8,9 @@ export function defaultSettings(): AppSettings {
     accurateDatabaseId: "",
     requireWarehouse: false,
     jubelioLocations: [...DEFAULT_JUBELIO_LOCATIONS],
+    ppnReportDate: "",
+    defaultWarehouse: "",
+    defaultBranch: "",
     customerMappings: [
       { id: "map-shopee", matchType: "channel", matchValue: "Shopee", customerNo: "SHOPEE", customerName: "Shopee" },
       { id: "map-tiktok", matchType: "channel", matchValue: "Tiktok", customerNo: "TIKTOK", customerName: "Tiktok" },
@@ -43,6 +46,9 @@ export function sanitizeSettings(input: unknown): AppSettings {
     defaultCustomerName: text(data.defaultCustomerName ?? base.defaultCustomerName),
     accurateDatabaseId: text(data.accurateDatabaseId ?? base.accurateDatabaseId),
     requireWarehouse: typeof data.requireWarehouse === "boolean" ? data.requireWarehouse : base.requireWarehouse,
+    ppnReportDate: text(data.ppnReportDate ?? base.ppnReportDate).slice(0, 10),
+    defaultWarehouse: text(data.defaultWarehouse ?? base.defaultWarehouse),
+    defaultBranch: text(data.defaultBranch ?? base.defaultBranch),
     jubelioLocations: Array.isArray(data.jubelioLocations)
       ? data.jubelioLocations.map((item) => text(item)).filter(Boolean)
       : base.jubelioLocations,

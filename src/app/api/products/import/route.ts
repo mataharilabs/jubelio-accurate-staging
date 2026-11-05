@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { fail, requirePermission } from "@/lib/http";
-import { listCatalog, saveManualCost, saveProduct } from "@/lib/products/service";
+import { listCatalog, listProducts, saveManualCost, saveProduct } from "@/lib/products/service";
 
 export async function POST(request: Request) {
   try {
@@ -13,10 +13,14 @@ export async function POST(request: Request) {
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(book.Sheets[book.SheetNames[0]], { defval: "" });
     const categories = await listCatalog("categories");
     const brands = await listCatalog("brands");
+    const duplicate = String(form.get("duplicate") ?? "overwrite");
+    const existing = duplicate === "skip" ? new Set((await listProducts()).map((row) => row.sku)) : null;
     let count = 0;
+    let skipped = 0;
     for (const row of rows) {
       const sku = String(row.SKU ?? row.sku ?? "").trim();
       if (!sku) continue;
+      if (existing?.has(sku)) { skipped += 1; continue; }
       const categoryName = String(row.Kategori ?? row.kategori ?? "").trim();
       const brandName = String(row.Merek ?? row.merek ?? "").trim();
       const category = categories.find((item) => item.name.toLowerCase() === categoryName.toLowerCase());
@@ -31,7 +35,7 @@ export async function POST(request: Request) {
       if (Number.isFinite(hpp) && String(row.HPP ?? row.hpp ?? "") !== "") await saveManualCost(sku, hpp, "Impor Excel", session.email);
       count += 1;
     }
-    return NextResponse.json({ ok: true, count });
+    return NextResponse.json({ ok: true, count, skipped });
   } catch (error) {
     return fail(error);
   }
