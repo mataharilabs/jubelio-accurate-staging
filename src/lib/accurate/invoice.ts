@@ -69,9 +69,9 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
   const location = version.lokasiGudang
     ? settings.locationMappings.find((row) => same(row.lokasiGudang, version.lokasiGudang ?? ""))
     : undefined;
-  if (version.lokasiGudang && settings.requireWarehouse && !location?.warehouseName) {
+  if (version.lokasiGudang && settings.requireWarehouse && !location?.warehouseName && !settings.defaultWarehouse) {
     reasons.push(`Gudang belum dipetakan untuk lokasi "${version.lokasiGudang}".`);
-  } else if (version.lokasiGudang && !location?.warehouseName) {
+  } else if (version.lokasiGudang && !location?.warehouseName && !settings.defaultWarehouse) {
     warnings.push(`Lokasi "${version.lokasiGudang}" belum punya nama gudang Accurate.`);
   }
 
@@ -80,7 +80,9 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
   if (customer?.customerNo) fields.customerNo = customer.customerNo;
   fields.transDate = accurateDate(version.tanggal ? `${version.tanggal}Z` : null, version.day);
   fields.description = `Jubelio ${version.noPesanan}`.slice(0, 500);
-  if (location?.branchName) fields.branchName = location.branchName;
+  const branchName = location?.branchName || settings.defaultBranch;
+  const warehouseName = location?.warehouseName || settings.defaultWarehouse;
+  if (branchName) fields.branchName = branchName;
 
   version.lines.forEach((line, index) => {
     if (line.missingWeight || line.unitPrice == null || line.unitDiskon == null) {
@@ -92,7 +94,7 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
     fields[`detailItem[${index}].quantity`] = formatDecimal(line.qty, 4);
     fields[`detailItem[${index}].unitPrice`] = formatDecimal(line.unitPrice ?? 0);
     fields[`detailItem[${index}].itemCashDiscount`] = formatDecimal((line.unitDiskon ?? 0) * line.qty);
-    if (location?.warehouseName) fields[`detailItem[${index}].warehouseName`] = location.warehouseName;
+    if (warehouseName) fields[`detailItem[${index}].warehouseName`] = warehouseName;
   });
 
   const gross = version.lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0);

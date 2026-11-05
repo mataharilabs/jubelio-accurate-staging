@@ -12,9 +12,10 @@ export async function GET(request: Request) {
       from: url.searchParams.get("from") || null,
       to: url.searchParams.get("to") || null,
       statuses: (url.searchParams.get("statuses") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
+      dataStatus: url.searchParams.get("dataStatus") === "deleted" || url.searchParams.get("dataStatus") === "all" ? url.searchParams.get("dataStatus") as "deleted" | "all" : "active",
       q: url.searchParams.get("q") ?? "",
       page: Number.isFinite(page) ? page : 0,
-      pageSize: 30,
+      pageSize: 25,
     });
     return NextResponse.json(result);
   } catch (error) {

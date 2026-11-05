@@ -19,5 +19,7 @@ export function dashboardQuery(input: Partial<DashboardQuery> | null | undefined
     statuses: asList(input?.statuses),
     couriers: asList(input?.couriers),
     skus: asList(input?.skus),
+    brands: asList(input?.brands),
+    categories: asList(input?.categories),
   };
 }

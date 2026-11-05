@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { downloadExport } from "@/components/download";
 import { api } from "@/lib/api-client";
 import type { AppMeta, FieldChange, OrderVersion, SyncBatch, SyncCategory, SyncReviewRow } from "@/lib/db/types";
+import { inSyncQueue } from "@/lib/domain/phase3";
 import { numId, rp } from "@/lib/format";
 
 const CATS: { id: SyncCategory; label: string; cls: string; hint: string }[] = [
@@ -46,6 +47,7 @@ export function SyncView() {
   const [history, setHistory] = useState<{ batches: SyncBatch[]; items: { noPesanan: string; status: string; error: string | null; category: string }[] }>({ batches: [], items: [] });
   const [histNo, setHistNo] = useState("");
   const [timeline, setTimeline] = useState<{ versions: OrderVersion[]; changes: FieldChange[] } | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   async function load(nextDays = days) {
     const [metaRow, review] = await Promise.all([
@@ -53,22 +55,20 @@ export function SyncView() {
       api<{ rows: SyncReviewRow[] }>(`/api/sync/review?days=${nextDays.join(",")}`),
     ]);
     setMeta(metaRow);
-    let visible = review.rows;
-    if (!nextDays.length) {
-      const uniq = [...new Set(review.rows.map((row) => row.day).filter(Boolean))].sort();
-      const picked = uniq.slice(-2);
-      setDays(picked);
-      if (uniq.length) {
-        setFrom(uniq[0]);
-        setTo(uniq[uniq.length - 1]);
-      }
-      if (picked.length) {
-        const narrowed = await api<{ rows: SyncReviewRow[] }>(`/api/sync/review?days=${picked.join(",")}`);
-        visible = narrowed.rows;
-      }
+    const uniq = [...new Set(review.rows.map((row) => row.day).filter(Boolean))].sort();
+    if (uniq.length && !from) {
+      setFrom(uniq[0]);
+      setTo(uniq[uniq.length - 1]);
     }
+    const visible = review.rows.filter((row) => inSyncQueue({
+      dataStatus: row.current.dataStatus,
+      category: row.category,
+      contentUpdatedAt: row.current.contentUpdatedAt,
+      syncedAt: row.syncedAt,
+      ignored: row.decision === "ignored",
+    }));
     setRows(visible);
-    setSelected(new Set(visible.filter((row) => row.selectable && PRESET.has(row.category)).map((row) => row.noPesanan)));
+    setSelected(new Set(visible.filter((row) => row.selectable).map((row) => row.noPesanan)));
   }
 
   useEffect(() => {
@@ -135,7 +135,15 @@ export function SyncView() {
 
   return (
     <div>
-      {!connected ? <div className="banner" style={{ marginBottom: 12 }}>Accurate belum terhubung. Alur review tetap bisa dipakai. Pengiriman faktur baru jalan setelah OAuth di Koneksi Accurate.</div> : null}
+      <div className="pagehead">
+        <div className="desc">Antrean hanya menampilkan pesanan dengan Tgl Updated lebih baru dari Tgl Synced. Setelah Sync atau Abaikan, pesanan hilang dari daftar. Pengiriman jual/retur ke Accurate ditahan sampai <b>ACCURATE_SALES_PUSH=enabled</b>.</div>
+        <div className="actions">
+          <button className="btn pri" disabled={!chosen.length || busy} onClick={() => { setAck(false); setModal("confirm"); }}>Sync yang dicentang ({chosen.length})</button>
+          <button className="btn" disabled={!chosen.length || busy} onClick={() => Promise.all([...selected].map((no) => decide(no, "ignored"))).catch((error: Error) => setMessage(error.message))}>Abaikan Sync</button>
+          <button className="btn" onClick={() => setRulesOpen(true)}>Aturan Accurate</button>
+        </div>
+      </div>
+      {!connected ? <div className="banner" style={{ marginBottom: 12 }}>Accurate belum terhubung. Antrean tetap bisa ditinjau. Tidak ada data yang dikirim.</div> : <div className="warnbox" style={{ marginBottom: 12 }}>Mode aman: penjualan dan retur tidak dikirim ke Accurate production kecuali env ACCURATE_SALES_PUSH diset enabled.</div>}
       {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
       <div className="stepper">
         <div className="step"><div className="no">1</div><div><b>Ambil data Jubelio</b><span>Upload Excel atau data contoh</span></div></div>
@@ -162,7 +170,6 @@ export function SyncView() {
                 .finally(() => setBusy(false));
             }}>Tarik dari Jubelio</button>
             <button className="btn" disabled={busy} onClick={() => api("/api/jubelio/pull", { method: "POST", body: JSON.stringify({ resume: true }) }).then(() => load(days)).catch((error: Error) => setMessage(error.message))}>Lanjutkan tarikan</button>
-            <button className="btn" disabled={busy} onClick={() => api("/api/seed", { method: "POST" }).then(() => load(days)).catch((error: Error) => setMessage(error.message))}>Muat data contoh 26–29 Okt</button>
           </div>
         </div>
         <div className="card">
@@ -238,7 +245,7 @@ export function SyncView() {
                             {row.category === "Berubah" || row.category === "Returned" || row.category === "Batal" ? (
                               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                                 <button className="btn pri sm" onClick={() => decide(row.noPesanan, "confirmed")}>Konfirmasi perubahan</button>
-                                <button className="btn sm" onClick={() => decide(row.noPesanan, "ignored")}>Dianggap tidak ada perubahan</button>
+                                <button className="btn sm" onClick={() => decide(row.noPesanan, "ignored")}>Abaikan</button>
                               </div>
                             ) : null}
                           </div>
@@ -293,6 +300,16 @@ export function SyncView() {
           ) : null}
         </div>
       </div>
+      {rulesOpen ? <div className="modal-bg on" onClick={(event) => { if (event.target === event.currentTarget) setRulesOpen(false); }}><div className="modal">
+        <h2>Aturan ke Accurate</h2>
+        <ol className="rules">
+          <li>Cancel belum tutup buku menghapus penjualan. Sudah tutup buku tidak diproses otomatis.</li>
+          <li>Retur Case 1 menghapus penjualan sebelum tutup buku, atau membuat Retur sesudahnya.</li>
+          <li>Case 2 dan 3 menjaga harga pesanan asal dan membawa pesanan -R harga 0 sebagai penjualan biasa.</li>
+          <li>Tombol ini tidak mengirim data selama ACCURATE_SALES_PUSH belum enabled.</li>
+        </ol>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}><button className="btn pri" onClick={() => setRulesOpen(false)}>Mengerti</button></div>
+      </div></div> : null}
     </div>
   );
 }

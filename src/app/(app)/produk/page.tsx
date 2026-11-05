@@ -1,5 +1,5 @@
-import { ProductDashboard } from "@/components/product-views";
+import { DashboardView } from "@/components/dashboard-view";
 
 export default function Page() {
-  return <ProductDashboard />;
+  return <DashboardView mode="produk" />;
 }

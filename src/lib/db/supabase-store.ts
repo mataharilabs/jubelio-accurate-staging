@@ -3,6 +3,7 @@ import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { bucketLabel } from "@/lib/domain/aggregate";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
+import { buildReturnVersions, canSoftDeleteOrder } from "@/lib/domain/phase3";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
@@ -140,6 +141,11 @@ function versionFrom(row: Row, lines: OrderLine[]): OrderVersion {
     qty: num(row.qty),
     revenue: numOrNull(row.revenue),
     lines,
+    dataStatus: row.data_status === "deleted" ? "deleted" : "active",
+    contentUpdatedAt: row.content_updated_at ? String(row.content_updated_at) : null,
+    returnCase: row.return_case === 1 || row.return_case === 2 || row.return_case === 3 ? row.return_case : null,
+    parentNoPesanan: strOrNull(row.parent_no_pesanan),
+    lossSibling: Boolean(row.loss_sibling),
   };
 }
 
@@ -168,6 +174,11 @@ function versionRow(version: OrderVersion): Row {
     total_diskon: version.totalDiskon,
     qty: version.qty,
     revenue: version.revenue,
+    data_status: version.dataStatus ?? "active",
+    content_updated_at: version.contentUpdatedAt ?? version.createdAt,
+    return_case: version.returnCase ?? null,
+    parent_no_pesanan: version.parentNoPesanan ?? null,
+    loss_sibling: Boolean(version.lossSibling),
   };
 }
 
@@ -278,6 +289,8 @@ export class SupabaseStore implements DataStore {
         statuses: query.statuses,
         couriers: query.couriers,
         skus: query.skus,
+        brands: query.brands ?? [],
+        categories: query.categories ?? [],
       },
     }), "menghitung dasbor");
     const raw = data as DashboardReport;
@@ -292,6 +305,12 @@ export class SupabaseStore implements DataStore {
         qty: Number(raw.kpis.qty),
         aov: Number(raw.kpis.aov),
         days: Number(raw.kpis.days),
+        hpp: Number(raw.kpis.hpp ?? 0),
+        fee: Number(raw.kpis.fee ?? 0),
+        marketing: Number(raw.kpis.marketing ?? 0),
+        profit: Number(raw.kpis.profit ?? raw.kpis.net ?? 0),
+        missingSkus: Number(raw.kpis.missingSkus ?? 0),
+        missingSkuSample: Array.isArray(raw.kpis.missingSkuSample) ? raw.kpis.missingSkuSample.map(String) : [],
       },
       trend: (raw.trend ?? []).map((row) => ({
         ...row,
@@ -311,6 +330,9 @@ export class SupabaseStore implements DataStore {
       provinces: (raw.provinces ?? []).map((row) => ({
         key: row.key,
         net: Number(row.net),
+        gross: Number(row.gross ?? 0),
+        hpp: Number(row.hpp ?? 0),
+        profit: Number(row.profit ?? row.net ?? 0),
         qty: Number(row.qty),
         orders: Number(row.orders),
         share: net ? Number(row.net) / net : 0,
@@ -318,10 +340,15 @@ export class SupabaseStore implements DataStore {
       cities: (raw.cities ?? []).map((row) => ({
         key: row.key,
         net: Number(row.net),
+        gross: Number(row.gross ?? 0),
+        hpp: Number(row.hpp ?? 0),
+        profit: Number(row.profit ?? row.net ?? 0),
         qty: Number(row.qty),
         orders: Number(row.orders),
         share: net ? Number(row.net) / net : 0,
       })),
+      brands: (raw.brands ?? []).map(numberGroup),
+      categories: (raw.categories ?? []).map(numberGroup),
     };
   }
 
@@ -350,6 +377,7 @@ export class SupabaseStore implements DataStore {
       q: query.q,
       page: query.page,
       pageSize: query.pageSize,
+      dataStatus: query.dataStatus ?? "active",
     } });
     if (error) {
       const text = error.message ?? "";
@@ -485,12 +513,12 @@ export class SupabaseStore implements DataStore {
     await commitWithRollback(steps);
   }
 
-  async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null): Promise<ImportResult> {
-    return this.importLines(lines, [], filename, source, by, { from: null, to: null });
+  async importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null, duplicate: "overwrite" | "skip" = "overwrite"): Promise<ImportResult> {
+    return this.importLines(lines, [], filename, source, by, { from: null, to: null }, duplicate);
   }
 
-  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source: "raw" | "api" = "raw"): Promise<ImportResult> {
-    return this.importLines(lines, cancels, filename, source, by, range);
+  async importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source: "raw" | "api" = "raw", duplicate: "overwrite" | "skip" = "overwrite"): Promise<ImportResult> {
+    return this.importLines(lines, cancels, filename, source, by, range, duplicate);
   }
 
   private async importLines(
@@ -500,6 +528,7 @@ export class SupabaseStore implements DataStore {
     source: ImportRecord["source"],
     by: string | null,
     range: { from: string | null; to: string | null },
+    duplicate: "overwrite" | "skip" = "overwrite",
   ): Promise<ImportResult> {
     const current = await this.latestForOrders([
       ...lines.map((line) => line.noPesanan),
@@ -507,7 +536,7 @@ export class SupabaseStore implements DataStore {
     ]);
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
-    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by });
+    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate });
     const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
     const merged = {
       versions: [...plan.versions, ...cancelPlan.versions],
@@ -579,6 +608,7 @@ export class SupabaseStore implements DataStore {
       revenue: orderRevenue(lines),
       totalNilaiPesanan: lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0),
       totalDiskon: previous.totalDiskon,
+      contentUpdatedAt: new Date().toISOString(),
     };
     if (!diffVersions(previous, next).length) throw new AppError("Tidak ada perubahan.");
     await this.saveReplacement(previous, next);
@@ -646,13 +676,17 @@ export class SupabaseStore implements DataStore {
   async setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void> {
     void by;
     const version = await this.oneCurrent(noPesanan);
-    const { error } = await this.sb.from("sync_states").upsert({
+    const now = new Date().toISOString();
+    const payload: Row = {
       no_pesanan: noPesanan,
       decision,
       decision_version_id: version.id,
-      updated_at: new Date().toISOString(),
-    });
+      updated_at: now,
+    };
+    if (decision === "ignored") payload.synced_at = now;
+    const { error } = await this.sb.from("sync_states").upsert(payload);
     if (error) explain(error, "menyimpan konfirmasi");
+    if (decision === "ignored") await this.logSync({ actor: by, action: "ignore", noPesanan, note: "Abaikan sync" });
   }
 
   async recordSync(by: string, items: SyncWrite[], note: string): Promise<SyncBatch> {
@@ -712,10 +746,63 @@ export class SupabaseStore implements DataStore {
         decision: null,
         decision_version_id: null,
         updated_at: createdAt,
+        synced_at: createdAt,
       });
       if (error) explain(error, "menyimpan status sync");
+      await this.logSync({ actor: by, action: "sync", noPesanan: item.noPesanan, note });
     }
     return batch;
+  }
+
+  async logSync(entry: { actor: string | null; action: "sync" | "ignore" | "blocked"; noPesanan: string; note?: string }): Promise<void> {
+    const { error } = await this.sb.from("sync_log").insert({
+      actor: entry.actor,
+      action: entry.action,
+      no_pesanan: entry.noPesanan,
+      note: entry.note ?? "",
+    });
+    if (error && /sync_log|schema cache|does not exist/i.test(error.message ?? "")) return;
+    if (error) explain(error, "mencatat log sync");
+  }
+
+  async listSyncLog(): Promise<{ at: string; actor: string | null; action: string; noPesanan: string; note: string }[]> {
+    const { data, error } = await this.sb.from("sync_log").select("*").order("created_at", { ascending: false }).limit(200);
+    if (error) return [];
+    return ((data ?? []) as Row[]).map((row) => ({
+      at: str(row.created_at),
+      actor: strOrNull(row.actor),
+      action: str(row.action),
+      noPesanan: str(row.no_pesanan),
+      note: str(row.note),
+    }));
+  }
+
+  async setDataStatus(noPesanan: string, dataStatus: "active" | "deleted"): Promise<void> {
+    const current = await this.oneCurrent(noPesanan);
+    if (dataStatus === "deleted") {
+      const state = await must(this.sb.from("sync_states").select("*").eq("no_pesanan", noPesanan).maybeSingle(), "membaca status sync");
+      const row = state as Row | null;
+      const synced = Boolean(row && (row.last_sync_status === "tersinkron" || str(row.accurate_id)));
+      const gate = canSoftDeleteOrder({ synced });
+      if (!gate.ok) throw new AppError(gate.reason ?? "Tidak bisa dihapus.");
+    }
+    const { error } = await this.sb.from("order_versions").update({ data_status: dataStatus }).eq("id", current.id);
+    if (error) explain(error, "mengubah status data");
+  }
+
+  async applyReturn(noPesanan: string, input: { status: string; returnCase: 1 | 2 | 3 | null; lost: { sku: string; qty: number }[] }, by: string): Promise<void> {
+    const previous = await this.oneCurrent(noPesanan);
+    const siblingNo = `${previous.noPesanan}-R`;
+    const siblingRow = await this.sb.from("order_versions").select("*").eq("no_pesanan", siblingNo).eq("is_current", true).maybeSingle();
+    const sibling = siblingRow.data ? (await this.hydrate([siblingRow.data as Row]))[0] : null;
+    const built = buildReturnVersions(previous, sibling, { ...input, by, now: new Date().toISOString() });
+    if (built.error) throw new AppError(built.error);
+    const [original, nextSibling] = built.versions;
+    await this.saveReplacement(previous, original);
+    if (nextSibling && sibling) await this.saveReplacement(sibling, nextSibling);
+    else if (nextSibling) {
+      await this.writePlan({ versions: [nextSibling], changes: [], retireIds: [], reviews: [], unchanged: 0 }, null);
+    }
   }
 
   async syncHistory() {
@@ -743,11 +830,13 @@ export class SupabaseStore implements DataStore {
     return ((data ?? []) as Row[]).map((row) => ({
       id: str(row.id), channelRaw: str(row.channel_raw), storeRaw: str(row.store_raw),
       channel: str(row.channel), store: str(row.store_name), needsReview: Boolean(row.needs_review),
+      mappedAt: optionalTime(row, "mapped_at"),
     }));
   }
   async saveChannelMap(row: Omit<ChannelMapRow, "id"> & { id?: string }) {
     const { error } = await this.sb.from("channel_store_map").upsert({
       id: row.id, channel_raw: row.channelRaw, store_raw: row.storeRaw, channel: row.channel, store_name: row.store, needs_review: row.needsReview,
+      mapped_at: row.channel.trim() && row.store.trim() && !row.needsReview ? new Date().toISOString() : null,
     });
     if (error) explain(error, "menyimpan mapping channel");
   }
@@ -757,10 +846,10 @@ export class SupabaseStore implements DataStore {
   }
   async listProvinceMaps(): Promise<ProvinceMapRow[]> {
     const data = await must(this.sb.from("province_map").select("*").order("raw"), "membaca mapping provinsi");
-    return ((data ?? []) as Row[]).map((row) => ({ id: str(row.id), raw: str(row.raw), official: str(row.official), needsReview: Boolean(row.needs_review) }));
+    return ((data ?? []) as Row[]).map((row) => ({ id: str(row.id), raw: str(row.raw), official: str(row.official), needsReview: Boolean(row.needs_review), mappedAt: optionalTime(row, "mapped_at") }));
   }
   async saveProvinceMap(row: Omit<ProvinceMapRow, "id"> & { id?: string }) {
-    const payload = { raw: row.raw, official: row.official, needs_review: row.needsReview };
+    const payload = { raw: row.raw, official: row.official, needs_review: row.needsReview, mapped_at: row.official.trim() && !row.needsReview ? new Date().toISOString() : null };
     const query = row.id
       ? this.sb.from("province_map").upsert({ ...payload, id: row.id })
       : this.sb.from("province_map").upsert(payload, { onConflict: "raw" });
@@ -770,11 +859,11 @@ export class SupabaseStore implements DataStore {
   async listCityMaps(): Promise<CityMapRow[]> {
     const data = await must(this.sb.from("city_map").select("*").order("province_raw"), "membaca mapping kota");
     return ((data ?? []) as Row[]).map((row) => ({
-      id: str(row.id), provinceRaw: str(row.province_raw), cityRaw: str(row.city_raw), official: str(row.official), needsReview: Boolean(row.needs_review),
+      id: str(row.id), provinceRaw: str(row.province_raw), cityRaw: str(row.city_raw), official: str(row.official), needsReview: Boolean(row.needs_review), mappedAt: optionalTime(row, "mapped_at"),
     }));
   }
   async saveCityMap(row: Omit<CityMapRow, "id"> & { id?: string }) {
-    const payload = { province_raw: row.provinceRaw, city_raw: row.cityRaw, official: row.official, needs_review: row.needsReview };
+    const payload = { province_raw: row.provinceRaw, city_raw: row.cityRaw, official: row.official, needs_review: row.needsReview, mapped_at: row.official.trim() && !row.needsReview ? new Date().toISOString() : null };
     const query = row.id
       ? this.sb.from("city_map").upsert({ ...payload, id: row.id })
       : this.sb.from("city_map").upsert(payload, { onConflict: "province_raw,city_raw" });
@@ -783,7 +872,7 @@ export class SupabaseStore implements DataStore {
   }
   async listWeights(): Promise<BundleWeight[]> {
     const data = await must(this.sb.from("bundle_weights").select("*").order("bundle_key"), "membaca bobot");
-    return ((data ?? []) as Row[]).map((row) => ({ id: str(row.id), bundleKey: str(row.bundle_key), bobot: num(row.bobot), updatedAt: str(row.updated_at) }));
+    return ((data ?? []) as Row[]).map((row) => ({ id: str(row.id), bundleKey: str(row.bundle_key), bobot: num(row.bobot), updatedAt: str(row.updated_at), confirmedAt: optionalTime(row, "confirmed_at") }));
   }
   async upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean) {
     if (replace) {
@@ -791,17 +880,19 @@ export class SupabaseStore implements DataStore {
       if (error) explain(error, "mengosongkan bobot");
     }
     if (!rows.length) return 0;
-    const { error } = await this.sb.from("bundle_weights").upsert(rows.map((row) => ({ bundle_key: row.bundleKey.trim(), bobot: row.bobot, updated_at: new Date().toISOString() })), { onConflict: "bundle_key" });
+    const now = new Date().toISOString();
+    const { error } = await this.sb.from("bundle_weights").upsert(rows.map((row) => ({ bundle_key: row.bundleKey.trim(), bobot: row.bobot, updated_at: now, confirmed_at: now })), { onConflict: "bundle_key" });
     if (error) explain(error, "menyimpan bobot");
     return rows.length;
   }
   async updateWeight(id: string, patch: { bundleKey?: string; bobot?: number }) {
-    const update: Row = { updated_at: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const update: Row = { updated_at: now, confirmed_at: now };
     if (patch.bundleKey) update.bundle_key = patch.bundleKey.trim();
     if (patch.bobot != null) update.bobot = patch.bobot;
     const data = await must(this.sb.from("bundle_weights").update(update).eq("id", id).select("*").single(), "mengubah bobot");
     const row = data as Row;
-    return { id: str(row.id), bundleKey: str(row.bundle_key), bobot: num(row.bobot), updatedAt: str(row.updated_at) };
+    return { id: str(row.id), bundleKey: str(row.bundle_key), bobot: num(row.bobot), updatedAt: str(row.updated_at), confirmedAt: optionalTime(row, "confirmed_at") ?? now };
   }
   async deleteWeight(id: string) {
     const { error } = await this.sb.from("bundle_weights").delete().eq("id", id);
@@ -863,8 +954,16 @@ export class SupabaseStore implements DataStore {
   }
 }
 
-function numberGroup<T extends { gross: number; net: number; qty: number; orders: number }>(row: T): T {
-  return { ...row, gross: Number(row.gross), net: Number(row.net), qty: Number(row.qty), orders: Number(row.orders) };
+function numberGroup<T extends { gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number }>(row: T): T {
+  return {
+    ...row,
+    gross: Number(row.gross),
+    net: Number(row.net),
+    qty: Number(row.qty),
+    orders: Number(row.orders),
+    hpp: Number(row.hpp ?? 0),
+    profit: Number(row.profit ?? row.net ?? 0),
+  };
 }
 
 function stateFrom(row: Row): SyncState {
@@ -878,7 +977,14 @@ function stateFrom(row: Row): SyncState {
     decision: decision === "confirmed" || decision === "ignored" ? decision : null,
     decisionVersionId: strOrNull(row.decision_version_id),
     updatedAt: str(row.updated_at),
+    syncedAt: optionalTime(row, "synced_at") ?? null,
   };
+}
+
+function optionalTime(row: Row, key: string): string | null | undefined {
+  if (!(key in row)) return undefined;
+  const value = row[key];
+  return value ? String(value) : null;
 }
 
 function batchFrom(row: Row): SyncBatch {

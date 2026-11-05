@@ -43,6 +43,11 @@ export type OrderVersion = {
   qty: number;
   revenue: number | null;
   lines: OrderLine[];
+  dataStatus?: "active" | "deleted";
+  contentUpdatedAt?: string | null;
+  returnCase?: 1 | 2 | 3 | null;
+  parentNoPesanan?: string | null;
+  lossSibling?: boolean;
 };
 
 export type FieldChange = {
@@ -79,6 +84,7 @@ export type SyncState = {
   decision: ChangeDecision;
   decisionVersionId: string | null;
   updatedAt: string;
+  syncedAt?: string | null;
 };
 
 export type SyncBatch = {
@@ -112,6 +118,7 @@ export type BundleWeight = {
   bundleKey: string;
   bobot: number;
   updatedAt: string;
+  confirmedAt?: string | null;
 };
 
 export type ChannelMapRow = {
@@ -121,6 +128,7 @@ export type ChannelMapRow = {
   channel: string;
   store: string;
   needsReview: boolean;
+  mappedAt?: string | null;
 };
 
 export type ProvinceMapRow = {
@@ -128,6 +136,7 @@ export type ProvinceMapRow = {
   raw: string;
   official: string;
   needsReview: boolean;
+  mappedAt?: string | null;
 };
 
 export type CityMapRow = {
@@ -136,6 +145,7 @@ export type CityMapRow = {
   cityRaw: string;
   official: string;
   needsReview: boolean;
+  mappedAt?: string | null;
 };
 
 export type ReviewItem = {
@@ -169,6 +179,9 @@ export type AppSettings = {
   accurateDatabaseId: string;
   requireWarehouse: boolean;
   jubelioLocations: string[];
+  ppnReportDate: string;
+  defaultWarehouse: string;
+  defaultBranch: string;
 };
 
 export type AccurateTokens = {
@@ -191,20 +204,24 @@ export type DashboardQuery = {
   statuses: string[];
   couriers: string[];
   skus: string[];
+  brands?: string[];
+  categories?: string[];
 };
 
-export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number };
+export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number; brand?: string; category?: string; name?: string; miss?: boolean };
 export type ProductRow = GroupRow & { sku: string; name: string; share: number };
-export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number };
+export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number; gross?: number; hpp?: number; profit?: number };
 
 export type DashboardReport = {
-  kpis: { gross: number; disc: number; net: number; orders: number; qty: number; aov: number; days: number };
-  trend: { bucket: string; label: string; gross: number; net: number; orders: number }[];
+  kpis: { gross: number; disc: number; net: number; orders: number; qty: number; aov: number; days: number; hpp: number; fee: number; marketing: number; profit: number; missingSkus: number; missingSkuSample?: string[] };
+  trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; profit?: number }[];
   channels: GroupRow[];
   stores: GroupRow[];
   products: ProductRow[];
   provinces: GeoRow[];
   cities: GeoRow[];
+  brands?: GroupRow[];
+  categories?: GroupRow[];
 };
 
 export type FilterOptions = {
@@ -236,6 +253,7 @@ export type OrderQuery = {
   from?: string | null;
   to?: string | null;
   statuses?: string[];
+  dataStatus?: "active" | "deleted" | "all";
   q: string;
   page: number;
   pageSize: number;
@@ -267,6 +285,13 @@ export type OrderPageRow = {
   flags: string[];
   hpp?: number | null;
   grossProfit?: number | null;
+  dataStatus?: "active" | "deleted";
+  contentUpdatedAt?: string | null;
+  returnCase?: 1 | 2 | 3 | null;
+  parentNoPesanan?: string | null;
+  lossSibling?: boolean;
+  syncedAt?: string | null;
+  synced?: boolean;
 };
 
 export type OrderPage = {
@@ -288,6 +313,7 @@ export type SyncReviewRow = {
   baseline: OrderVersion | null;
   changes: FieldChange[];
   accurateNumber: string | null;
+  syncedAt?: string | null;
 };
 
 export type ImportResult = {

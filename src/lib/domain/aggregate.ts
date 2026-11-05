@@ -1,4 +1,5 @@
 import type { DashboardQuery, DashboardReport, GeoRow, GroupRow, OrderVersion, ProductRow } from "@/lib/db/types";
+import { hppInclusive } from "@/lib/domain/phase3";
 
 const BLN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 const HARI = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
@@ -54,6 +55,10 @@ type Flat = {
   qty: number;
   gross: number;
   net: number;
+  hpp: number;
+  miss: boolean;
+  brand: string;
+  category: string;
 };
 
 function selected(list: string[] | undefined, value: string): boolean {
@@ -64,6 +69,7 @@ export function flattenCurrent(versions: OrderVersion[]): Flat[] {
   const rows: Flat[] = [];
   for (const version of versions) {
     if (!version.isCurrent || version.source === "cancel" || version.source === "manual_delete") continue;
+    if (version.dataStatus === "deleted") continue;
     for (const line of version.lines) {
       rows.push({
         no: version.noPesanan,
@@ -79,6 +85,10 @@ export function flattenCurrent(versions: OrderVersion[]): Flat[] {
         qty: line.qty,
         gross: line.subTotal ?? 0,
         net: (line.revenuePerUnit ?? 0) * line.qty,
+        hpp: line.unitCogs == null ? 0 : hppInclusive(line.unitCogs) * line.qty,
+        miss: line.unitCogs == null,
+        brand: "",
+        category: "",
       });
     }
   }
@@ -96,18 +106,22 @@ export function filterFlat(rows: Flat[], query: DashboardQuery): Flat[] {
     if (!selected(query.statuses, row.status)) return false;
     if (!selected(query.couriers, row.kurir)) return false;
     if (!selected(query.skus, row.sku)) return false;
+    if (!selected(query.brands, row.brand)) return false;
+    if (!selected(query.categories, row.category)) return false;
     return true;
   });
 }
 
-function group(rows: Flat[], key: (row: Flat) => string): Map<string, { gross: number; net: number; qty: number; orders: Set<string>; name: string }> {
-  const map = new Map<string, { gross: number; net: number; qty: number; orders: Set<string>; name: string }>();
+function group(rows: Flat[], key: (row: Flat) => string): Map<string, { gross: number; net: number; hpp: number; qty: number; orders: Set<string>; name: string; miss: boolean }> {
+  const map = new Map<string, { gross: number; net: number; hpp: number; qty: number; orders: Set<string>; name: string; miss: boolean }>();
   for (const row of rows) {
     const id = key(row);
-    const item = map.get(id) ?? { gross: 0, net: 0, qty: 0, orders: new Set<string>(), name: row.name };
+    const item = map.get(id) ?? { gross: 0, net: 0, hpp: 0, qty: 0, orders: new Set<string>(), name: row.name, miss: false };
     item.gross += row.gross;
     item.net += row.net;
+    item.hpp += row.hpp;
     item.qty += row.qty;
+    item.miss = item.miss || row.miss;
     item.orders.add(row.no);
     if (!item.name && row.name) item.name = row.name;
     map.set(id, item);
@@ -119,7 +133,9 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
   const orders = new Set(rows.map((row) => row.no));
   const gross = rows.reduce((sum, row) => sum + row.gross, 0);
   const net = rows.reduce((sum, row) => sum + row.net, 0);
+  const hpp = rows.reduce((sum, row) => sum + row.hpp, 0);
   const qty = rows.reduce((sum, row) => sum + row.qty, 0);
+  const missing = [...new Set(rows.filter((row) => row.miss).map((row) => row.sku))];
   const days = new Set(rows.map((row) => row.day).filter(Boolean)).size;
   const trendMap = group(rows, (row) => bucketOf(row.day, query.granularity));
   const trend = [...trendMap.entries()]
@@ -129,12 +145,15 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
       label: bucketLabel(bucket, query.granularity),
       gross: item.gross,
       net: item.net,
+      hpp: item.hpp,
+      profit: item.net - item.hpp,
       orders: item.orders.size,
     }));
-  const toGroup = (map: Map<string, { gross: number; net: number; qty: number; orders: Set<string> }>): GroupRow[] =>
+  const toGroup = (map: Map<string, { gross: number; net: number; hpp: number; qty: number; orders: Set<string> }>): GroupRow[] =>
     [...map.entries()]
-      .map(([key, item]) => ({ key, gross: item.gross, net: item.net, qty: item.qty, orders: item.orders.size }))
-      .sort((a, b) => b.gross - a.gross);
+      .filter(([key]) => key !== "")
+      .map(([key, item]) => ({ key, gross: item.gross, net: item.net, hpp: item.hpp, profit: item.net - item.hpp, qty: item.qty, orders: item.orders.size }))
+      .sort((a, b) => b.net - a.net);
   const products: ProductRow[] = [...group(rows, (row) => row.sku).entries()]
     .map(([sku, item]) => ({
       key: sku,
@@ -142,14 +161,17 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
       name: item.name,
       gross: item.gross,
       net: item.net,
+      hpp: item.hpp,
+      profit: item.net - item.hpp,
       qty: item.qty,
       orders: item.orders.size,
       share: net ? item.net / net : 0,
+      miss: item.miss,
     }))
     .sort((a, b) => b.net - a.net);
   const geo = (key: (row: Flat) => string): GeoRow[] =>
     [...group(rows, key).entries()]
-      .map(([name, item]) => ({ key: name, net: item.net, orders: item.orders.size, qty: item.qty, share: net ? item.net / net : 0 }))
+      .map(([name, item]) => ({ key: name, net: item.net, gross: item.gross, hpp: item.hpp, profit: item.net - item.hpp, orders: item.orders.size, qty: item.qty, share: net ? item.net / net : 0 }))
       .sort((a, b) => b.net - a.net);
   return {
     kpis: {
@@ -160,6 +182,12 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
       qty,
       aov: orders.size ? net / orders.size : 0,
       days,
+      hpp,
+      fee: 0,
+      marketing: 0,
+      profit: net - hpp,
+      missingSkus: missing.length,
+      missingSkuSample: missing.slice(0, 4),
     },
     trend,
     channels: toGroup(group(rows, (row) => row.channel)),
@@ -167,6 +195,8 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
     products,
     provinces: geo((row) => row.province),
     cities: geo((row) => row.city),
+    brands: toGroup(group(rows, (row) => row.brand)),
+    categories: toGroup(group(rows, (row) => row.category)),
   };
 }
 

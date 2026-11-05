@@ -5,37 +5,52 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 
-const LINKS = [
-  { href: "/", label: "Dashboard E-Commerce", group: "Menu" },
-  { href: "/sync", label: "Sync ke Accurate", group: "Menu" },
-  { href: "/pesanan", label: "Data Pesanan", group: "Menu" },
-  { href: "/produk", label: "Produk", group: "Menu" },
-  { href: "/produk/daftar", label: "Daftar produk", group: "Menu" },
-  { href: "/produk/kategori", label: "Kategori", group: "Menu" },
-  { href: "/produk/merek", label: "Brand", group: "Menu" },
-  { href: "/pengaturan/channel", label: "Mapping Channel & Toko", group: "Pengaturan" },
-  { href: "/pengaturan/bobot", label: "Bobot Bundle", group: "Pengaturan" },
+type NavLink = { href: string; label: string; group: string; soon?: boolean; badge?: "channel" | "geo" | "bundle" | "hpp" };
+
+const LINKS: NavLink[] = [
+  { href: "/", label: "Toko", group: "Dashboard" },
+  { href: "/produk", label: "Produk", group: "Dashboard" },
+  { href: "/pesanan", label: "Pesanan", group: "Master Data" },
+  { href: "/produk/daftar", label: "Produk", group: "Master Data" },
+  { href: "/produk/merek", label: "Brand", group: "Master Data" },
+  { href: "/produk/kategori", label: "Kategori", group: "Master Data" },
+  { href: "/produk/hpp", label: "HPP", group: "Master Data", badge: "hpp" },
+  { href: "/pembayaran", label: "Pembayaran", group: "Master Data", soon: true },
+  { href: "/marketing", label: "Marketing spending", group: "Master Data", soon: true },
+  { href: "/sync", label: "Pesanan", group: "Sinkron ke Accurate" },
+  { href: "/sync/pembayaran", label: "Pembayaran", group: "Sinkron ke Accurate", soon: true },
+  { href: "/pengaturan/channel", label: "Mapping Channel & Toko", group: "Pengaturan", badge: "channel" },
+  { href: "/pengaturan/wilayah", label: "Mapping Provinsi & Kota", group: "Pengaturan", badge: "geo" },
+  { href: "/pengaturan/bobot", label: "Bobot bundle", group: "Pengaturan", badge: "bundle" },
+  { href: "/pengaturan/jubelio", label: "Koneksi Jubelio", group: "Pengaturan" },
   { href: "/pengaturan/accurate", label: "Koneksi Accurate", group: "Pengaturan" },
-  { href: "/pengaturan/pengguna", label: "Pengguna & peran", group: "Pengaturan" },
-  { href: "/pengaturan/audit", label: "Jejak audit", group: "Pengaturan" },
+  { href: "/pengaturan/pengguna", label: "Pengguna & Peran", group: "Pengaturan" },
 ];
 
-const TITLES: Record<string, string> = {
-  "/": "Dashboard E-Commerce",
-  "/sync": "Sync ke Accurate",
-  "/pesanan": "Data Pesanan",
-  "/produk": "Produk",
-  "/produk/daftar": "Daftar produk",
-  "/produk/kategori": "Kategori",
-  "/produk/merek": "Brand",
-  "/pengaturan/channel": "Mapping Channel & Toko",
-  "/pengaturan/bobot": "Bobot Bundle",
-  "/pengaturan/accurate": "Koneksi Accurate",
-  "/pengaturan/pengguna": "Pengguna & peran",
-  "/pengaturan/audit": "Jejak audit",
+const GROUPS = ["Dashboard", "Master Data", "Sinkron ke Accurate", "Pengaturan"];
+
+const TITLES: Record<string, { crumb: string; title: string }> = {
+  "/": { crumb: "Dashboard", title: "Toko" },
+  "/produk": { crumb: "Dashboard", title: "Produk" },
+  "/pesanan": { crumb: "Master Data", title: "Pesanan" },
+  "/produk/daftar": { crumb: "Master Data", title: "Produk" },
+  "/produk/merek": { crumb: "Master Data", title: "Brand" },
+  "/produk/kategori": { crumb: "Master Data", title: "Kategori" },
+  "/produk/hpp": { crumb: "Master Data", title: "HPP" },
+  "/pembayaran": { crumb: "Master Data", title: "Pembayaran" },
+  "/marketing": { crumb: "Master Data", title: "Marketing spending" },
+  "/sync": { crumb: "Sinkron ke Accurate", title: "Pesanan" },
+  "/sync/pembayaran": { crumb: "Sinkron ke Accurate", title: "Pembayaran" },
+  "/pengaturan/channel": { crumb: "Pengaturan", title: "Mapping Channel & Toko" },
+  "/pengaturan/wilayah": { crumb: "Pengaturan", title: "Mapping Provinsi & Kota" },
+  "/pengaturan/bobot": { crumb: "Pengaturan", title: "Bobot bundle" },
+  "/pengaturan/jubelio": { crumb: "Pengaturan", title: "Koneksi Jubelio" },
+  "/pengaturan/accurate": { crumb: "Pengaturan", title: "Koneksi Accurate" },
+  "/pengaturan/pengguna": { crumb: "Pengaturan", title: "Pengguna & Peran" },
+  "/pengaturan/audit": { crumb: "Pengaturan", title: "Jejak audit" },
 };
 
-type Meta = { lastImportAt: string | null; accurateConnected: boolean; mode: string; accurateUser: string | null };
+type Pending = { channel: number; geo: number; bundle: number; hpp: number };
 
 function Bell() {
   const [open, setOpen] = useState(false);
@@ -69,11 +84,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [meta, setMeta] = useState<Meta | null>(null);
+  const [role, setRole] = useState("");
+  const [pending, setPending] = useState<Pending>({ channel: 0, geo: 0, bundle: 0, hpp: 0 });
 
   useEffect(() => {
-    api<{ email: string }>("/api/auth/me").then((me) => setEmail(me.email)).catch(() => setEmail(""));
-    api<Meta>("/api/meta").then(setMeta).catch(() => setMeta(null));
+    api<{ email: string; role?: string }>("/api/auth/me").then((me) => { setEmail(me.email); setRole(me.role ?? ""); }).catch(() => setEmail(""));
+    api<Pending>("/api/pending").then(setPending).catch(() => undefined);
   }, [pathname]);
 
   async function logout() {
@@ -83,24 +99,25 @@ export function Shell({ children }: { children: React.ReactNode }) {
   }
 
   const initials = (email || "ML").slice(0, 2).toUpperCase();
-  const last = meta?.lastImportAt
-    ? new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Jakarta" }).format(new Date(meta.lastImportAt))
-    : "belum ada";
+  const current = TITLES[pathname] ?? { crumb: "Jubelio", title: "Accurate" };
+  const activeHref = LINKS.filter((link) => link.href === "/" ? pathname === "/" : pathname === link.href || (link.href !== "/produk" && pathname.startsWith(link.href))).sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   return (
     <div className="app">
       {open ? <button className="backdrop" aria-label="Tutup menu" onClick={() => setOpen(false)} /> : null}
       <aside className={`nav ${open ? "open" : ""}`}>
-        <div className="brand">Jubelio → Accurate<small>Admin Penjualan</small></div>
+        <div className="brand">Jubelio ↔ Accurate<small>Admin E-Commerce · ecommerce.asiacommerce.id</small></div>
         <nav>
-          {["Menu", "Pengaturan"].map((group) => (
+          {GROUPS.map((group) => (
             <div key={group}>
               <div className="sec">{group}</div>
               {LINKS.filter((link) => link.group === group).map((link) => {
-                const active = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
+                const count = link.badge ? pending[link.badge] : 0;
                 return (
-                  <Link key={link.href} href={link.href} className={active ? "on" : ""} onClick={() => setOpen(false)}>
+                  <Link key={link.href} href={link.href} className={activeHref === link.href ? "on" : ""} onClick={() => setOpen(false)}>
                     {link.label}
+                    {link.soon ? <span className="soon">Segera</span> : null}
+                    {!link.soon && count ? <span className="cnt" title="Perlu dibereskan">{count}</span> : null}
                   </Link>
                 );
               })}
@@ -108,18 +125,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="side-foot">
-          {meta?.accurateConnected ? "Accurate terhubung" : "Accurate belum terhubung"}
-          <br />
-          {meta?.mode === "supabase" ? "Data di Supabase" : "Mode lokal"}
-          <button onClick={logout} className="btn ghost" style={{ marginTop: 8, padding: 0 }}>Keluar</button>
+          <button onClick={logout} className="btn ghost" style={{ padding: 0 }}>Keluar</button>
         </div>
       </aside>
       <div className="main">
         <div className="top">
           <button className="btn menu-btn" onClick={() => setOpen(true)} aria-label="Buka menu">Menu</button>
-          <h1>{TITLES[pathname] ?? "Jubelio → Accurate"}</h1>
+          <div>
+            <div className="crumb">{current.crumb}</div>
+            <h1>{current.title}</h1>
+          </div>
           <div className="sp" />
-          <span className="mut small">Terakhir impor: {last} WIB</span>
+          <span className="mut small hide-m">{email}{role ? ` · ${role}` : ""}</span>
           <Bell />
           <div className="avatar" title={email}>{initials}</div>
         </div>

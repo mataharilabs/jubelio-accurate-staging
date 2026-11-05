@@ -32,6 +32,11 @@ export function accurateConfigured(): boolean {
   return Boolean(env.clientId && env.clientSecret);
 }
 
+/** Live Accurate sales/return writes stay off unless this is exactly "enabled". */
+export function salesPushEnabled(): boolean {
+  return process.env.ACCURATE_SALES_PUSH === "enabled";
+}
+
 export function missingAccurateEnv(): string[] {
   const missing: string[] = [];
   if (!process.env.ACCURATE_CLIENT_ID?.trim()) missing.push("ACCURATE_CLIENT_ID");

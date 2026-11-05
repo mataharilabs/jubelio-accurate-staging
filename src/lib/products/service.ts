@@ -20,12 +20,13 @@ export type ProductRow = {
   hppSource: CostSource | null;
   hppDate: string | null;
   hppCarried: boolean;
+  hppUpdatedAt?: string | null;
   firstSoldAt: string | null;
   jubelioItemId?: number | null;
   nameSource?: "item" | "line" | null;
   updatedBy?: string | null;
 };
-export type ProductQuery = { q?: string; categoryId?: string; brandId?: string; noHpp?: boolean; notInAccurate?: boolean; incomplete?: boolean; month?: string };
+export type ProductQuery = { q?: string; categoryId?: string; brandId?: string; noHpp?: boolean; notInAccurate?: boolean; incomplete?: boolean; month?: string; confirmed?: "yes" | "no"; active?: "active" | "deleted" | "all" };
 export type HppRun = {
   id: string;
   status: "running" | "done" | "failed";
@@ -73,6 +74,33 @@ function writeFile(db: FileDb) {
   writeFileSync(FILE, JSON.stringify(db));
 }
 
+function moveCatalogProducts(db: FileDb, kind: "categories" | "brands", id: string, replacementId?: string | null) {
+  const field = kind === "brands" ? "brandId" : "categoryId";
+  const used = db.products.filter((row) => row[field] === id);
+  if (!used.length) return;
+  const label = kind === "brands" ? "brand" : "kategori";
+  if (!replacementId || replacementId === id) throw new AppError(`Pilih ${label} pengganti. ${used.length} produk masih memakainya.`);
+  const rows = kind === "brands" ? db.brands : db.categories;
+  const next = rows.find((row) => row.id === replacementId && row.active);
+  if (!next) throw new AppError("Pengganti tidak ditemukan atau sudah dihapus.");
+  for (const product of used) {
+    product[field] = replacementId;
+    if (field === "brandId") product.brandName = next.name;
+    else product.categoryName = next.name;
+  }
+}
+
+async function moveCatalogProductsRemote(kind: "categories" | "brands", id: string, replacementId?: string | null) {
+  const column = kind === "brands" ? "brand_id" : "category_id";
+  const label = kind === "brands" ? "brand" : "kategori";
+  const { count, error } = await client().from("products").select("sku", { count: "exact", head: true }).eq(column, id);
+  if (error) fail(error, "menghitung produk");
+  if (!count) return;
+  if (!replacementId || replacementId === id) throw new AppError(`Pilih ${label} pengganti. ${count} produk masih memakainya.`);
+  const { error: moved } = await client().from("products").update({ [column]: replacementId }).eq(column, id);
+  if (moved) fail(moved, "memindahkan produk");
+}
+
 function withCost(product: ProductRow, costs: CostPoint[], month: string): ProductRow {
   const chosen = costForMonth(costs.filter((row) => row.sku === product.sku), month);
   return {
@@ -81,6 +109,7 @@ function withCost(product: ProductRow, costs: CostPoint[], month: string): Produ
     hppSource: chosen.cost?.source ?? null,
     hppDate: chosen.cost?.periodMonth ?? null,
     hppCarried: chosen.carried,
+    hppUpdatedAt: chosen.cost ? chosen.cost.fetchedAt || null : null,
   };
 }
 
@@ -95,7 +124,7 @@ export async function listCatalog(kind: "categories" | "brands"): Promise<Catalo
   return (data ?? []).map((row) => ({ id: String(row.id), name: String(row.name), active: Boolean(row.active) }));
 }
 
-export async function saveCatalog(kind: "categories" | "brands", input: { id?: string; name: string; active?: boolean }, by: string | null): Promise<void> {
+export async function saveCatalog(kind: "categories" | "brands", input: { id?: string; name: string; active?: boolean; replacementId?: string | null }, by: string | null): Promise<void> {
   const name = input.name.trim();
   if (!name) throw new AppError("Nama tidak boleh kosong.");
   if (!supabaseConfigured()) {
@@ -103,12 +132,14 @@ export async function saveCatalog(kind: "categories" | "brands", input: { id?: s
     const rows = db[kind];
     const existing = rows.find((row) => row.id === input.id || row.name.toLowerCase() === name.toLowerCase());
     if (existing) {
+      if (input.active === false) moveCatalogProducts(db, kind, existing.id, input.replacementId);
       existing.name = name;
       existing.active = input.active ?? existing.active;
     } else rows.push({ id: crypto.randomUUID(), name, active: input.active ?? true });
     writeFile(db);
     return;
   }
+  if (input.active === false && input.id) await moveCatalogProductsRemote(kind, input.id, input.replacementId);
   const payload: { id?: string; name: string; active: boolean; created_by?: string | null } = { name, active: input.active ?? true };
   if (input.id) payload.id = input.id;
   else payload.created_by = by;
@@ -168,6 +199,10 @@ export async function listProducts(query: ProductQuery = {}): Promise<ProductRow
     if (query.categoryId && row.categoryId !== query.categoryId) return false;
     if (query.brandId && row.brandId !== query.brandId) return false;
     if (query.noHpp && row.hpp != null) return false;
+    if (query.confirmed === "no" && row.hpp != null) return false;
+    if (query.confirmed === "yes" && row.hpp == null) return false;
+    if (query.active === "active" && row.active === false) return false;
+    if (query.active === "deleted" && row.active !== false) return false;
     if (query.notInAccurate && row.accurateFound !== "false") return false;
     if (query.incomplete && !productIncomplete(row)) return false;
     return true;
@@ -467,7 +502,7 @@ export async function recordAccurateCost(sku: string, unitCost: number, runId: s
     const product = db.products.find((row) => row.sku === sku);
     if (product) product.accurateFound = found ? "true" : "false";
     if (found) {
-      db.costs = db.costs.filter((row) => !(row.sku === sku && row.periodMonth === month && row.source === "accurate"));
+      db.costs = db.costs.filter((row) => !(row.sku === sku && row.periodMonth === month));
       db.costs.push({ sku, periodMonth: month, unitCost, source: "accurate", fetchedAt: new Date().toISOString() });
     }
     writeFile(db);
@@ -481,6 +516,7 @@ export async function recordAccurateCost(sku: string, unitCost: number, runId: s
   }).eq("sku", sku);
   if (error) fail(error, "menandai produk Accurate");
   if (!found) return;
+  await sb.from("product_costs").delete().eq("sku", sku).eq("period_month", month).eq("source", "manual");
   const inserted = await sb.from("product_costs").upsert({
     sku, period_month: month, unit_cost: unitCost, source: "accurate", fetched_at: new Date().toISOString(), sync_run_id: runId,
   }, { onConflict: "sku,period_month,source" });
