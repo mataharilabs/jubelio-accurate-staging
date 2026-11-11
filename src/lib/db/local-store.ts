@@ -233,6 +233,7 @@ export class LocalStore implements DataStore {
         lossSibling: Boolean(version.lossSibling),
         syncedAt: this.db.syncStates.find((item) => item.noPesanan === version.noPesanan)?.syncedAt ?? null,
         synced: this.db.syncStates.some((item) => item.noPesanan === version.noPesanan && (item.lastSyncStatus === "tersinkron" || Boolean(item.accurateId))),
+        source: version.source,
       })),
     };
   }
@@ -269,8 +270,9 @@ export class LocalStore implements DataStore {
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
     const current = currentMap(this.db);
-    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate });
-    const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
+    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate, protectManual: source === "api" });
+    const keptCancels = source === "api" ? cancels.filter((cancel) => current.get(cancel.noPesanan)?.source !== "manual") : cancels;
+    const cancelPlan = planCancels(current, keptCancels, { importId, createdAt, createdBy: by });
     const versions = [...plan.versions, ...cancelPlan.versions];
     const record: ImportRecord = {
       id: importId,
@@ -602,6 +604,14 @@ export class LocalStore implements DataStore {
     this.replaceCurrent(previous, original);
     if (nextSibling && sibling) this.replaceCurrent(sibling, nextSibling);
     else if (nextSibling) this.db.versions.push(nextSibling);
+    this.persist();
+  }
+
+  async createManualOrder(version: OrderVersion): Promise<void> {
+    const history = this.db.versions.filter((row) => row.noPesanan === version.noPesanan);
+    if (history.some((row) => row.isCurrent)) throw new AppError("Nomor pesanan sudah ada.");
+    const versionNo = history.reduce((max, row) => Math.max(max, row.versionNo), 0) + 1;
+    this.db.versions.push({ ...version, versionNo });
     this.persist();
   }
 }

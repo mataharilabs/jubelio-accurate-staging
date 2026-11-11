@@ -78,4 +78,5 @@ export interface DataStore {
   getTokens(): Promise<AccurateTokens | null>;
   saveTokens(tokens: AccurateTokens | null): Promise<void>;
   currentVersions(): Promise<OrderVersion[]>;
+  createManualOrder(version: OrderVersion): Promise<void>;
 }

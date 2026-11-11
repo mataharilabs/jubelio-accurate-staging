@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { permissionsFor } from "@/lib/access/store";
-import { hasPermission, type Permission } from "@/lib/auth/permissions";
+import { listUsers, permissionsFor } from "@/lib/access/store";
+import { canMaintainMaster, hasPermission, type Permission } from "@/lib/auth/permissions";
 import { readSessionToken, SESSION_COOKIE, type Session } from "@/lib/auth/session";
 import { WorkbookError } from "@/lib/cleanup/read-xlsx";
 import { AppError } from "@/lib/errors";
@@ -17,6 +17,16 @@ export async function requirePermission(permission: Permission): Promise<Session
   const session = await requireSession();
   const granted = await permissionsFor(session);
   if (!hasPermission(granted, permission)) throw new AppError("Tidak punya izin untuk tindakan ini.", 403);
+  return session;
+}
+
+/** Master Tambah/ubah: Super Admin, Admin, or a role that already holds the permission. */
+export async function requireMaster(permission: Permission): Promise<Session> {
+  const session = await requireSession();
+  const granted = await permissionsFor(session);
+  const users = await listUsers().catch(() => []);
+  const role = users.find((user) => user.email.toLowerCase() === session.email.toLowerCase())?.roleName ?? "";
+  if (!canMaintainMaster(role, granted, permission)) throw new AppError("Tidak punya izin untuk tindakan ini. Hanya Super Admin dan Admin.", 403);
   return session;
 }
 

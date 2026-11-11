@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { isBundlePending, isMappingPending, needsAccurateSync } from "@/lib/domain/phase3";
+import { buildGeoPairs, countPendingGeo } from "@/lib/region/pairs";
 import { fail, requireSession } from "@/lib/http";
 import { listProducts } from "@/lib/products/service";
 
@@ -35,7 +36,7 @@ export async function GET() {
     }
     return NextResponse.json({
       channel: channels.filter((row) => isMappingPending(row)).length,
-      geo: provinces.filter((row) => isMappingPending(row)).length + cities.filter((row) => isMappingPending(row)).length,
+      geo: countPendingGeo(buildGeoPairs({ provinces, cities, reviews })),
       bundle: reviews.filter((row) => row.kind === "bobot" && row.status === "open").length + weights.filter((row) => isBundlePending(row)).length,
       hpp,
       orders,

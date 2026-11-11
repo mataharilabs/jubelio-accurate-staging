@@ -540,8 +540,9 @@ export class SupabaseStore implements DataStore {
     ]);
     const createdAt = new Date().toISOString();
     const importId = crypto.randomUUID();
-    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate });
-    const cancelPlan = planCancels(current, cancels, { importId, createdAt, createdBy: by });
+    const plan = planImport(current, lines, { importId, source: source === "clean" || source === "sample" ? "import_clean" : "import_raw", createdAt, createdBy: by, duplicate, protectManual: source === "api" });
+    const keptCancels = source === "api" ? cancels.filter((cancel) => current.get(cancel.noPesanan)?.source !== "manual") : cancels;
+    const cancelPlan = planCancels(current, keptCancels, { importId, createdAt, createdBy: by });
     const merged = {
       versions: [...plan.versions, ...cancelPlan.versions],
       changes: [...plan.changes, ...cancelPlan.changes],
@@ -955,6 +956,21 @@ export class SupabaseStore implements DataStore {
       updated_at: tokens.updatedAt,
     });
     if (error) explain(error, "menyimpan token Accurate");
+  }
+
+  async createManualOrder(version: OrderVersion): Promise<void> {
+    const data = await must(this.sb.from("order_versions").select("id, version_no, is_current").eq("no_pesanan", version.noPesanan), "memeriksa nomor pesanan");
+    const rows = (data ?? []) as Row[];
+    if (rows.some((row) => Boolean(row.is_current))) throw new AppError("Nomor pesanan sudah ada.");
+    const versionNo = rows.reduce((max, row) => Math.max(max, Number(row.version_no) || 0), 0) + 1;
+    try {
+      await this.writePlan({ versions: [{ ...version, versionNo }], changes: [], retireIds: [], reviews: [], unchanged: 0 }, null);
+    } catch (error) {
+      if (error instanceof AppError && /source_check|check constraint|violates check/i.test(error.message)) {
+        throw new AppError("Jalankan supabase/migrations/0010_manual_master.sql di SQL Editor sebelum menambah pesanan manual.");
+      }
+      throw error;
+    }
   }
 }
 

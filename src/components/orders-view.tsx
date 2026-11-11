@@ -3,15 +3,48 @@
 import { useEffect, useState } from "react";
 import { downloadExport } from "@/components/download";
 import { api } from "@/lib/api-client";
+import { canMaintainMaster } from "@/lib/auth/permissions";
 import type { AppMeta, OrderPage, OrderPageRow } from "@/lib/db/types";
 import { booksClosed, needsAccurateSync, yesterdayWib } from "@/lib/domain/phase3";
 import { numId, rp } from "@/lib/format";
+import { OFFICIAL_CITIES, OFFICIAL_PROVINCES } from "@/lib/region/names";
 
 const CASES = [
   { id: 1 as const, label: "Case 1 · Balik semua", hint: "Semua barang kembali" },
   { id: 2 as const, label: "Case 2 · Balik sebagian", hint: "Sebagian barang hilang" },
   { id: 3 as const, label: "Case 3 · Tidak balik semua", hint: "Semua barang hilang" },
 ];
+
+const ORDER_STATUSES = ["PROCESSING", "SHIPPED", "COMPLETED", "RETURNED", "CANCELED"];
+
+type ManualLine = { sku: string; qty: string; unitPrice: string; unitDiskon: string };
+type ManualDraft = {
+  noPesanan: string;
+  tanggal: string;
+  channel: string;
+  storeName: string;
+  customerName: string;
+  status: string;
+  province: string;
+  city: string;
+  kurir: string;
+  lines: ManualLine[];
+};
+
+function blankOrder(): ManualDraft {
+  return {
+    noPesanan: "",
+    tanggal: "",
+    channel: "",
+    storeName: "",
+    customerName: "",
+    status: "COMPLETED",
+    province: "",
+    city: "",
+    kurir: "",
+    lines: [{ sku: "", qty: "1", unitPrice: "0", unitDiskon: "0" }],
+  };
+}
 
 export function OrdersView() {
   const [from, setFrom] = useState("");
@@ -35,6 +68,10 @@ export function OrdersView() {
   const [lostQty, setLostQty] = useState("");
   const [rules, setRules] = useState(false);
   const [duplicate, setDuplicate] = useState<"overwrite" | "skip">("overwrite");
+  const [canAdd, setCanAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState<ManualDraft>(blankOrder());
+  const [skus, setSkus] = useState<{ sku: string; name: string }[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +100,9 @@ export function OrdersView() {
       setStoreOptions(result.options?.stores ?? []);
     }).catch(() => undefined);
     api<AppMeta>("/api/meta").then((meta) => setPpn(meta.ppnReportDate ?? null)).catch(() => undefined);
+    api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
+      setCanAdd(canMaintainMaster(me.role ?? "", me.permissions ?? [], "orders.edit"));
+    }).catch(() => setCanAdd(false));
     load(0, "", "", "", "", "active", "", "", "").catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -139,6 +179,35 @@ export function OrdersView() {
     }).catch((err: Error) => setError(err.message));
   }
 
+  function openAdd() {
+    setDraft(blankOrder());
+    setAdding(true);
+    setError(null);
+    if (!skus.length) {
+      api<{ rows: { sku: string; name: string }[] }>("/api/products?dataStatus=active")
+        .then((result) => setSkus((result.rows ?? []).map((row) => ({ sku: row.sku, name: row.name }))))
+        .catch(() => undefined);
+    }
+  }
+
+  async function saveAdd() {
+    await api("/api/orders/manual", {
+      method: "POST",
+      body: JSON.stringify({
+        ...draft,
+        lines: draft.lines.map((line) => ({
+          sku: line.sku,
+          qty: Number(line.qty),
+          unitPrice: Number(line.unitPrice),
+          unitDiskon: Number(line.unitDiskon || 0),
+        })),
+      }),
+    });
+    setAdding(false);
+    setMessage(`Pesanan ${draft.noPesanan.trim()} disimpan sebagai manual dan masuk antrean Sinkron.`);
+    await load();
+  }
+
   async function pullYesterday() {
     const day = yesterdayWib();
     setMessage(`Menarik pesanan ${day} (H-1)…`);
@@ -166,7 +235,8 @@ export function OrdersView() {
       <div className="pagehead">
         <div className="desc">Perubahan data memperbarui Tgl Updated. Perubahan status biasa (bukan Retur/Cancel) tidak. Tombol Sync hanya menarik H-1. Pesanan yang sudah sync tidak bisa dihapus.</div>
         <div className="actions">
-          <button className="btn pri" onClick={() => pullYesterday().catch((err: Error) => setError(err.message))}>Sync H-1</button>
+          {canAdd ? <button className="btn pri" onClick={openAdd}>Tambah</button> : null}
+          <button className="btn" onClick={() => pullYesterday().catch((err: Error) => setError(err.message))}>Sync H-1</button>
           <label className="btn">Import<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file).catch((err: Error) => setError(err.message)); }} /></label>
           <select value={duplicate} onChange={(event) => setDuplicate(event.target.value as "overwrite" | "skip")} aria-label="Jika nomor pesanan sudah ada">
             <option value="overwrite">Timpa duplikat</option>
@@ -226,7 +296,7 @@ export function OrdersView() {
                 return (
                 <tr key={row.lineId} className={row.dataStatus === "deleted" ? "deleted" : ""}>
                   <td><input type="checkbox" checked={picked.has(row.noPesanan)} onChange={(event) => setPicked((current) => { const next = new Set(current); if (event.target.checked) next.add(row.noPesanan); else next.delete(row.noPesanan); return next; })} /></td>
-                  <td data-label="No pesanan">{row.noPesanan}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
+                  <td data-label="No pesanan">{row.noPesanan}{row.source === "manual" ? <div className="pill p-gray">Manual</div> : null}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
                   <td data-label="Tanggal">{row.day}</td>
                   <td data-label="Channel">{row.channel}</td>
                   <td data-label="Toko">{row.storeName}</td>
@@ -258,6 +328,50 @@ export function OrdersView() {
           </span>
         </div>
       </div>
+      {adding ? (
+        <div className="modal-bg on"><div className="modal" style={{ width: 760 }}>
+          <h2>Tambah Pesanan</h2>
+          <div className="small mut">Isi satu data baru. Sumber dicatat sebagai manual. Revenue dihitung dari harga dikurangi diskon per unit. HPP mengikuti Master HPP pada tanggal pesanan, sama seperti pesanan Jubelio. Pesanan masuk antrean Sinkron.</div>
+          <div className="grid g2 mt">
+            <div className="f"><label>No Pesanan</label><input value={draft.noPesanan} onChange={(event) => setDraft({ ...draft, noPesanan: event.target.value })} /></div>
+            <div className="f"><label>Tanggal pesanan</label><input type="datetime-local" value={draft.tanggal} onChange={(event) => setDraft({ ...draft, tanggal: event.target.value })} /></div>
+            <div className="f"><label>Channel</label><input list="channel-opsi" value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value })} placeholder="Pilih" /></div>
+            <div className="f"><label>Toko</label><input list="toko-opsi" value={draft.storeName} onChange={(event) => setDraft({ ...draft, storeName: event.target.value })} placeholder="Pilih" /></div>
+            <div className="f"><label>Nama pelanggan</label><input value={draft.customerName} onChange={(event) => setDraft({ ...draft, customerName: event.target.value })} /></div>
+            <div className="f"><label>Status pesanan</label>
+              <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
+                {ORDER_STATUSES.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </div>
+            <div className="f"><label>Provinsi</label><input list="provinsi-resmi" value={draft.province} onChange={(event) => setDraft({ ...draft, province: event.target.value })} /></div>
+            <div className="f"><label>Kota</label><input list="kota-resmi-pesanan" value={draft.city} onChange={(event) => setDraft({ ...draft, city: event.target.value })} /></div>
+            <div className="f"><label>Kurir</label><input value={draft.kurir} onChange={(event) => setDraft({ ...draft, kurir: event.target.value })} /></div>
+          </div>
+          <div className="f mt"><label>Item pesanan</label></div>
+          <table className="small"><thead><tr><th>SKU</th><th>Qty</th><th>Harga satuan</th><th>Diskon / unit</th><th></th></tr></thead><tbody>
+            {draft.lines.map((line, index) => (
+              <tr key={index}>
+                <td><input list="sku-master" value={line.sku} onChange={(event) => setDraft({ ...draft, lines: draft.lines.map((item, i) => i === index ? { ...item, sku: event.target.value } : item) })} /></td>
+                <td><input type="number" value={line.qty} onChange={(event) => setDraft({ ...draft, lines: draft.lines.map((item, i) => i === index ? { ...item, qty: event.target.value } : item) })} /></td>
+                <td><input type="number" value={line.unitPrice} onChange={(event) => setDraft({ ...draft, lines: draft.lines.map((item, i) => i === index ? { ...item, unitPrice: event.target.value } : item) })} /></td>
+                <td><input type="number" value={line.unitDiskon} onChange={(event) => setDraft({ ...draft, lines: draft.lines.map((item, i) => i === index ? { ...item, unitDiskon: event.target.value } : item) })} /></td>
+                <td>{draft.lines.length > 1 ? <button className="btn sm" type="button" onClick={() => setDraft({ ...draft, lines: draft.lines.filter((_, i) => i !== index) })}>×</button> : null}</td>
+              </tr>
+            ))}
+          </tbody></table>
+          <button className="btn sm mt" type="button" onClick={() => setDraft({ ...draft, lines: [...draft.lines, { sku: "", qty: "1", unitPrice: "0", unitDiskon: "0" }] })}>+ Tambah baris</button>
+          <div className="note mt">Menyimpan perubahan data (item, qty, harga, Retur/Cancel) memperbarui Tgl Updated, sehingga pesanan muncul di Sinkron ke Accurate. Perubahan status biasa tidak mengubah Tgl Updated. Sync Jubelio tidak menimpa pesanan manual ini; impor Excel memakai Timpa atau Lewati.</div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <button className="btn" onClick={() => setAdding(false)}>Batal</button>
+            <button className="btn pri" onClick={() => saveAdd().catch((err: Error) => setError(err.message))}>Simpan</button>
+          </div>
+          <datalist id="channel-opsi">{channelOptions.map((item) => <option key={item} value={item} />)}</datalist>
+          <datalist id="toko-opsi">{storeOptions.map((item) => <option key={item} value={item} />)}</datalist>
+          <datalist id="provinsi-resmi">{OFFICIAL_PROVINCES.map((name) => <option key={name} value={name} />)}</datalist>
+          <datalist id="kota-resmi-pesanan">{OFFICIAL_CITIES.filter((city) => !draft.province || city.province === draft.province).map((city) => <option key={`${city.province}-${city.name}`} value={city.name} />)}</datalist>
+          <datalist id="sku-master">{skus.map((row) => <option key={row.sku} value={row.sku}>{row.name}</option>)}</datalist>
+        </div></div>
+      ) : null}
       {edit ? (
         <div className="modal-bg on"><div className="modal" style={{ width: 760 }}>
           <h2>Ubah pesanan</h2>
@@ -319,7 +433,7 @@ export function OrdersView() {
             <tr><td>4</td><td>Data lain berubah</td><td>diperbarui</td></tr>
             <tr><td>5</td><td>Tidak berubah</td><td>tetap</td></tr>
           </tbody></table>
-          <div className="note mt">Tombol di halaman ini hanya menarik kemarin (H-1). Cron harian tetap H-1 s/d H-3, mingguan H-4 s/d H-28.</div>
+          <div className="note mt">Tombol di halaman ini hanya menarik kemarin (H-1). Cron harian tetap H-1 s/d H-3, mingguan H-4 s/d H-28. Pesanan sumber manual dengan nomor yang sama tidak ditimpa oleh sync Jubelio. Impor Excel tetap memakai Timpa atau Lewati.</div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}><button className="btn pri" onClick={() => setRules(false)}>Mengerti</button></div>
         </div></div>
       ) : null}
