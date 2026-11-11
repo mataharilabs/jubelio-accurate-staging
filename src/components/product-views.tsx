@@ -231,6 +231,8 @@ export function ProductList() {
 
 export function HppMaster() {
   const [rows, setRows] = useState<Product[]>([]);
+  const [canEdit, setCanEdit] = useState(false);
+  const [canSync, setCanSync] = useState(false);
   const [q, setQ] = useState("");
   const [confirmed, setConfirmed] = useState<"no" | "yes" | "">("no");
   const [month, setMonth] = useState("");
@@ -249,6 +251,11 @@ export function HppMaster() {
     setPage(0);
   }
   useEffect(() => {
+    api<{ permissions?: string[] }>("/api/auth/me").then((me) => {
+      const permissions = me.permissions ?? [];
+      setCanEdit(permissions.includes("products.manage"));
+      setCanSync(permissions.includes("hpp.sync"));
+    }).catch(() => undefined);
     api<{ rows: Product[] }>("/api/products?dataStatus=active").then((result) => {
       const pending = result.rows.some((row) => row.hpp == null);
       const initial = pending ? "no" : "";
@@ -268,7 +275,7 @@ export function HppMaster() {
       <div className="pagehead">
         <div className="desc">Nilai di tabel adalah DPP dari Accurate. Dashboard memakai HPP inkl. PPN = DPP × 1,11. SKU tanpa HPP bernilai 0 dan tanggal updated kosong.</div>
         <div className="actions">
-          <button className="btn" onClick={() => api("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll: true }) }).then(() => { setMessage("Sync HPP bulan ini dijalankan."); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP bulan ini</button>
+          {canSync ? <button className="btn" onClick={() => api("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll: true }) }).then(() => { setMessage("Sync HPP bulan ini dijalankan."); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP bulan ini</button> : <span className="small mut">Sync HPP hanya untuk Super Admin dan Admin.</span>}
         </div>
       </div>
       {pending && confirmed !== "yes" ? <div className="pendbar"><b>{pending}</b> SKU belum dikonfirmasi pada saringan ini.</div> : null}
@@ -295,7 +302,7 @@ export function HppMaster() {
             <td>{row.hpp == null ? "Belum ada" : row.hppSource === "manual" ? "Manual" : "Accurate"}{row.hppCarried ? " · bulan sebelumnya" : ""}</td>
             <td>{row.hpp == null || !row.hppUpdatedAt ? <span className="pill p-warn">Kosong</span> : new Date(row.hppUpdatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}</td>
             <td>{row.hpp == null ? <span className="pill p-warn">Belum</span> : <span className="pill p-ok">Sudah</span>}</td>
-            <td><button className="btn sm" onClick={() => { setEdit(row); setUnitCost(row.hpp == null ? "" : String(row.hpp)); }}>Isi manual</button></td>
+            <td>{canEdit ? <button className="btn sm" onClick={() => { setEdit(row); setUnitCost(row.hpp == null ? "" : String(row.hpp)); }}>Isi manual</button> : <span className="small mut">Hanya Admin</span>}</td>
           </tr>
         ))}</tbody>
       </table></div>

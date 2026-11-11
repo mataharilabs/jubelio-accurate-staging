@@ -51,8 +51,13 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
     setChannels(channel);
     setProvinces(province);
     setCities(city);
-    setReviews(review.filter((row) => row.status === "open"));
+    const openReviews = review.filter((row) => row.status === "open");
+    setReviews(openReviews);
     setBulk(null);
+    const pending = scope === "channel"
+      ? channel.filter((row) => isMappingPending(row)).length
+      : province.filter((row) => isMappingPending(row)).length + city.filter((row) => isMappingPending(row)).length;
+    setMapFilter((current) => current === "belum" && pending === 0 ? "semua" : current);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
 
@@ -250,6 +255,8 @@ export function BobotView() {
     const result = await api<{ weights: BundleWeight[]; reviews: { rawKey: string }[] }>("/api/weights");
     setWeights(result.weights);
     setReviews(result.reviews);
+    const waiting = result.reviews.length + result.weights.filter((row) => isBundlePending(row)).length;
+    setFilter((current) => current === "belum" && waiting === 0 ? "semua" : current);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
 

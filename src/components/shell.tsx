@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 
-type NavLink = { href: string; label: string; group: string; soon?: boolean; badge?: "channel" | "geo" | "bundle" | "hpp" };
+type NavLink = { href: string; label: string; group: string; soon?: boolean; badge?: "channel" | "geo" | "bundle" | "hpp" | "orders" };
 
 const LINKS: NavLink[] = [
   { href: "/", label: "Toko", group: "Dashboard" },
@@ -17,7 +17,7 @@ const LINKS: NavLink[] = [
   { href: "/produk/hpp", label: "HPP", group: "Master Data", badge: "hpp" },
   { href: "/pembayaran", label: "Pembayaran", group: "Master Data", soon: true },
   { href: "/marketing", label: "Marketing spending", group: "Master Data", soon: true },
-  { href: "/sync", label: "Pesanan", group: "Sinkron ke Accurate" },
+  { href: "/sync", label: "Pesanan", group: "Sinkron ke Accurate", badge: "orders" },
   { href: "/sync/pembayaran", label: "Pembayaran", group: "Sinkron ke Accurate", soon: true },
   { href: "/pengaturan/channel", label: "Mapping Channel & Toko", group: "Pengaturan", badge: "channel" },
   { href: "/pengaturan/wilayah", label: "Mapping Provinsi & Kota", group: "Pengaturan", badge: "geo" },
@@ -50,7 +50,15 @@ const TITLES: Record<string, { crumb: string; title: string }> = {
   "/pengaturan/audit": { crumb: "Pengaturan", title: "Jejak audit" },
 };
 
-type Pending = { channel: number; geo: number; bundle: number; hpp: number };
+type Pending = { channel: number; geo: number; bundle: number; hpp: number; orders: number };
+
+const PENDING_LABEL: Record<string, { key: keyof Pending; text: string }> = {
+  "/sync": { key: "orders", text: "pesanan belum ter-sync" },
+  "/produk/hpp": { key: "hpp", text: "HPP belum dikonfirmasi" },
+  "/pengaturan/channel": { key: "channel", text: "toko baru perlu di-mapping" },
+  "/pengaturan/wilayah": { key: "geo", text: "wilayah baru perlu di-mapping" },
+  "/pengaturan/bobot": { key: "bundle", text: "bundle perlu di-update" },
+};
 
 function Bell() {
   const [open, setOpen] = useState(false);
@@ -85,7 +93,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
-  const [pending, setPending] = useState<Pending>({ channel: 0, geo: 0, bundle: 0, hpp: 0 });
+  const [pending, setPending] = useState<Pending>({ channel: 0, geo: 0, bundle: 0, hpp: 0, orders: 0 });
 
   useEffect(() => {
     api<{ email: string; role?: string }>("/api/auth/me").then((me) => { setEmail(me.email); setRole(me.role ?? ""); }).catch(() => setEmail(""));
@@ -100,6 +108,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   const initials = (email || "ML").slice(0, 2).toUpperCase();
   const current = TITLES[pathname] ?? { crumb: "Jubelio", title: "Accurate" };
+  const pendingTitle = PENDING_LABEL[pathname];
+  const pendingCount = pendingTitle ? pending[pendingTitle.key] : 0;
   const activeHref = LINKS.filter((link) => link.href === "/" ? pathname === "/" : pathname === link.href || (link.href !== "/produk" && pathname.startsWith(link.href))).sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   return (
@@ -133,7 +143,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <button className="btn menu-btn" onClick={() => setOpen(true)} aria-label="Buka menu">Menu</button>
           <div>
             <div className="crumb">{current.crumb}</div>
-            <h1>{current.title}</h1>
+            <h1>{current.title}{pendingCount ? <span className="ptcnt" title={pendingTitle?.text}>{pendingCount} {pendingTitle?.text}</span> : null}</h1>
           </div>
           <div className="sp" />
           <span className="mut small hide-m">{email}{role ? ` · ${role}` : ""}</span>

@@ -78,7 +78,7 @@ describe("sync categories", () => {
     expect(classifyOrder(version({ id: "v2", source: "cancel", status: "CANCELED", lines: [] }), synced)).toBe("Batal");
     expect(needsConfirmation("Batal")).toBe(false);
     expect(canSync("Batal", "confirmed", "v2", "v2")).toBe(false);
-    expect(classifyOrder(version({ source: "cancel", status: "CANCELED" }), null)).toBeNull();
+    expect(classifyOrder(version({ source: "cancel", status: "CANCELED" }), null)).toBe("Batal");
   });
 
   it("records sku add and remove in the field diff", () => {

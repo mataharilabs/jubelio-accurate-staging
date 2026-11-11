@@ -17,7 +17,7 @@ import { AppError } from "@/lib/errors";
 import { fail, requirePermission } from "@/lib/http";
 import type { Permission } from "@/lib/auth/permissions";
 
-async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string }): Promise<OrderPageRow[]> {
+async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string; dataStatus?: "active" | "deleted" | "all"; channels?: string[]; stores?: string[]; sync?: "" | "need" | "done" }): Promise<OrderPageRow[]> {
   const rows: OrderPageRow[] = [];
   let page = 0;
   for (;;) {
@@ -41,6 +41,11 @@ export async function POST(request: Request) {
       to?: string | null;
       statuses?: string[];
       q?: string;
+      dataStatus?: "active" | "deleted" | "all";
+      channels?: string[];
+      stores?: string[];
+      sync?: "" | "need" | "done";
+      nos?: string[];
       allowLargePdf?: boolean;
       days?: string[];
       metric?: "net" | "gross";
@@ -52,7 +57,21 @@ export async function POST(request: Request) {
     let buffer: Buffer;
     let filename = "ekspor";
     if (body.target === "orders") {
-      const rows = await allOrderRows(store, { day: body.day || null, from: body.from, to: body.to, statuses: body.statuses, q: body.q ?? "" });
+      let rows = await allOrderRows(store, {
+        day: body.day || null,
+        from: body.from,
+        to: body.to,
+        statuses: body.statuses,
+        q: body.q ?? "",
+        dataStatus: body.dataStatus,
+        channels: body.channels,
+        stores: body.stores,
+        sync: body.sync,
+      });
+      if (body.nos?.length) {
+        const wanted = new Set(body.nos);
+        rows = rows.filter((row) => wanted.has(row.noPesanan));
+      }
       if (format === "pdf" && rows.length > 200 && !body.allowLargePdf) {
         throw new AppError("PDF terlalu besar untuk filter ini. Unduh Excel agar semua baris ikut.");
       }

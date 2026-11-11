@@ -107,29 +107,54 @@ export function canSoftDeleteOrder(input: { synced: boolean }): { ok: boolean; r
 
 export type AccurateIntentLabel =
   | "Buat penjualan"
+  | "Buat penjualan (Barang Hilang)"
   | "Ubah penjualan"
   | "Hapus penjualan"
   | "Buat Retur penjualan"
   | "Tidak diproses otomatis"
-  | "Tidak dikirim";
+  | "Tidak dikirim (cancel sebelum sync)"
+  | "Tidak dikirim (retur sebelum sync)";
 
 export function accurateIntent(input: {
   status: string;
   everSynced: boolean;
   orderDay: string;
   ppnReportDate?: string | null;
-}): { label: AccurateIntentLabel; send: boolean } {
+  lossSibling?: boolean;
+}): { label: AccurateIntentLabel; send: boolean; block: boolean } {
   const status = input.status.trim().toUpperCase();
   const closed = booksClosed(input.orderDay, input.ppnReportDate);
   const cancel = status === "CANCELED" || status === "CANCELLED" || status === "CANCEL";
   const returned = status === "RETURNED";
-  if ((cancel || returned) && !input.everSynced) return { label: "Tidak dikirim", send: false };
-  if (cancel && closed) return { label: "Tidak diproses otomatis", send: false };
-  if (cancel) return { label: "Hapus penjualan", send: false };
-  if (returned && closed) return { label: "Buat Retur penjualan", send: false };
-  if (returned) return { label: "Hapus penjualan", send: false };
-  if (!input.everSynced) return { label: "Buat penjualan", send: true };
-  return { label: "Ubah penjualan", send: true };
+  if (cancel && !input.everSynced) return { label: "Tidak dikirim (cancel sebelum sync)", send: false, block: false };
+  if (returned && !input.everSynced) return { label: "Tidak dikirim (retur sebelum sync)", send: false, block: false };
+  if (cancel && closed) return { label: "Tidak diproses otomatis", send: false, block: true };
+  if (cancel) return { label: "Hapus penjualan", send: false, block: false };
+  if (returned && closed) return { label: "Buat Retur penjualan", send: false, block: false };
+  if (returned) return { label: "Hapus penjualan", send: false, block: false };
+  if (!input.everSynced && input.lossSibling) return { label: "Buat penjualan (Barang Hilang)", send: true, block: false };
+  if (!input.everSynced) return { label: "Buat penjualan", send: true, block: false };
+  return { label: "Ubah penjualan", send: true, block: false };
+}
+
+/** Active orders whose content is newer than the last sync stamp, including never-synced orders. */
+export function needsAccurateSync(input: {
+  dataStatus?: string | null;
+  contentUpdatedAt?: string | null;
+  syncedAt?: string | null;
+}): boolean {
+  if (input.dataStatus === "deleted") return false;
+  if (!input.syncedAt) return true;
+  if (!input.contentUpdatedAt) return false;
+  return input.contentUpdatedAt > input.syncedAt;
+}
+
+export function syncReason(category: string, everSynced: boolean): string {
+  if (!everSynced || category === "Baru") return "Belum pernah sync";
+  if (category === "Returned") return "Status jadi RETURNED";
+  if (category === "Batal") return "Status jadi CANCELED";
+  if (category === "Berubah") return "Data berubah";
+  return category;
 }
 
 export function inSyncQueue(input: {

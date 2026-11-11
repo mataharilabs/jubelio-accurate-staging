@@ -273,6 +273,7 @@ export class SupabaseStore implements DataStore {
       accurateConnected: Boolean(tokens?.accessToken),
       accurateConfigured: accurateConfigured(),
       accurateUser: tokens?.userEmail ?? null,
+      ppnReportDate: (await this.getSettings()).ppnReportDate || null,
     };
   }
 
@@ -378,6 +379,9 @@ export class SupabaseStore implements DataStore {
       page: query.page,
       pageSize: query.pageSize,
       dataStatus: query.dataStatus ?? "active",
+      channels: query.channels ?? [],
+      stores: query.stores ?? [],
+      sync: query.sync ?? "",
     } });
     if (error) {
       const text = error.message ?? "";
