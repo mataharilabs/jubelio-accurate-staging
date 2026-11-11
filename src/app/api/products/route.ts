@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { recordAudit } from "@/lib/access/store";
-import { fail, requirePermission } from "@/lib/http";
+import { AppError } from "@/lib/errors";
+import { fail, requireMaster, requirePermission } from "@/lib/http";
 import { monthStart } from "@/lib/products/cost";
 import { listProducts, productIncomplete, saveManualCost, saveProduct, wibMonth } from "@/lib/products/service";
 
@@ -28,8 +29,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const session = await requirePermission("products.manage");
-    const body = await request.json() as { sku?: string; name?: string; categoryId?: string | null; brandId?: string | null; active?: boolean; unitCost?: number; note?: string; skus?: string[]; periodMonth?: string };
+    const session = await requireMaster("products.manage");
+    const body = await request.json() as { sku?: string; name?: string; categoryId?: string | null; brandId?: string | null; active?: boolean; unitCost?: number; note?: string; skus?: string[]; periodMonth?: string; hppOnly?: boolean };
+    if (body.hppOnly) {
+      const sku = body.sku?.trim() ?? "";
+      if (!sku) throw new AppError("SKU wajib diisi.");
+      if (body.unitCost == null || !Number.isFinite(Number(body.unitCost))) throw new AppError("Nilai DPP wajib diisi.");
+      const existing = (await listProducts({ active: "active" })).find((row) => row.sku === sku && row.active !== false);
+      if (!existing) throw new AppError(`SKU ${sku} tidak ada di Master Produk.`);
+      const periodMonth = monthStart(body.periodMonth || wibMonth());
+      await saveManualCost(sku, Number(body.unitCost), body.note ?? "HPP manual", session.email, periodMonth);
+      await recordAudit({ actorEmail: session.email, action: "hpp.manual", entity: "product_cost", entityId: sku, before: null, after: { sku, unitCost: Number(body.unitCost), periodMonth, source: "manual" } });
+      return NextResponse.json({ ok: true });
+    }
     if (body.skus?.length) {
       const current = await listProducts();
       for (const sku of body.skus) {

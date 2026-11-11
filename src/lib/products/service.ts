@@ -6,7 +6,7 @@ import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { chooseProductName, classifyNameUpdate, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
 import { costForMonth, monthStart, type CostPoint, type CostSource } from "@/lib/products/cost";
 
-export type CatalogItem = { id: string; name: string; active: boolean };
+export type CatalogItem = { id: string; name: string; active: boolean; code?: string; note?: string; updatedAt?: string | null; updatedBy?: string | null };
 export type ProductRow = {
   sku: string;
   name: string;
@@ -117,16 +117,37 @@ export function wibDay(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 }
 
-export async function listCatalog(kind: "categories" | "brands"): Promise<CatalogItem[]> {
-  if (!supabaseConfigured()) return readFile()[kind].slice().sort((a, b) => a.name.localeCompare(b.name, "id"));
-  const { data, error } = await client().from(kind).select("id, name, active").order("name");
-  if (error) fail(error, "membaca master");
-  return (data ?? []).map((row) => ({ id: String(row.id), name: String(row.name), active: Boolean(row.active) }));
+function mapCatalog(row: Record<string, unknown>): CatalogItem {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    active: Boolean(row.active),
+    code: row.code == null ? "" : String(row.code),
+    note: row.note == null ? "" : String(row.note),
+    updatedAt: row.updated_at ? String(row.updated_at) : null,
+    updatedBy: row.updated_by ? String(row.updated_by) : null,
+  };
 }
 
-export async function saveCatalog(kind: "categories" | "brands", input: { id?: string; name: string; active?: boolean; replacementId?: string | null }, by: string | null): Promise<void> {
+export async function listCatalog(kind: "categories" | "brands"): Promise<CatalogItem[]> {
+  if (!supabaseConfigured()) return readFile()[kind].slice().sort((a, b) => a.name.localeCompare(b.name, "id"));
+  const columns = kind === "brands"
+    ? "id, name, active, code, updated_at, updated_by"
+    : "id, name, active, note, updated_at, updated_by";
+  const full = await client().from(kind).select(columns).order("name");
+  if (full.error && /column|schema cache|does not exist/i.test(full.error.message ?? "")) {
+    const basic = await client().from(kind).select("id, name, active").order("name");
+    if (basic.error) fail(basic.error, "membaca master");
+    return (basic.data ?? []).map((row) => mapCatalog(row as Record<string, unknown>));
+  }
+  if (full.error) fail(full.error, "membaca master");
+  return (full.data ?? []).map((row) => mapCatalog(row as Record<string, unknown>));
+}
+
+export async function saveCatalog(kind: "categories" | "brands", input: { id?: string; name: string; active?: boolean; replacementId?: string | null; code?: string; note?: string }, by: string | null): Promise<void> {
   const name = input.name.trim();
   if (!name) throw new AppError("Nama tidak boleh kosong.");
+  const now = new Date().toISOString();
   if (!supabaseConfigured()) {
     const db = readFile();
     const rows = db[kind];
@@ -135,15 +156,29 @@ export async function saveCatalog(kind: "categories" | "brands", input: { id?: s
       if (input.active === false) moveCatalogProducts(db, kind, existing.id, input.replacementId);
       existing.name = name;
       existing.active = input.active ?? existing.active;
-    } else rows.push({ id: crypto.randomUUID(), name, active: input.active ?? true });
+      if (input.code !== undefined) existing.code = input.code.trim();
+      if (input.note !== undefined) existing.note = input.note.trim();
+      existing.updatedAt = now;
+      existing.updatedBy = by;
+    } else rows.push({ id: crypto.randomUUID(), name, active: input.active ?? true, code: input.code?.trim() ?? "", note: input.note?.trim() ?? "", updatedAt: now, updatedBy: by });
     writeFile(db);
     return;
   }
   if (input.active === false && input.id) await moveCatalogProductsRemote(kind, input.id, input.replacementId);
-  const payload: { id?: string; name: string; active: boolean; created_by?: string | null } = { name, active: input.active ?? true };
+  const payload: Record<string, unknown> = { name, active: input.active ?? true, updated_at: now, updated_by: by };
   if (input.id) payload.id = input.id;
   else payload.created_by = by;
+  if (kind === "brands" && input.code !== undefined) payload.code = input.code.trim();
+  if (kind === "categories" && input.note !== undefined) payload.note = input.note.trim();
   const { error } = await client().from(kind).upsert(payload, { onConflict: "name" });
+  if (error && /column|schema cache|does not exist/i.test(error.message ?? "")) {
+    const slim: Record<string, unknown> = { name, active: input.active ?? true };
+    if (input.id) slim.id = input.id;
+    else slim.created_by = by;
+    const again = await client().from(kind).upsert(slim, { onConflict: "name" });
+    if (again.error) fail(again.error, "menyimpan master");
+    return;
+  }
   if (error) fail(error, "menyimpan master");
 }
 

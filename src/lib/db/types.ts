@@ -1,6 +1,6 @@
 export type SyncCategory = "Baru" | "Berubah" | "Returned" | "Batal" | "Status saja" | "Sama";
 export type ChangeDecision = "confirmed" | "ignored" | null;
-export type VersionSource = "import_raw" | "import_clean" | "manual_edit" | "manual_delete" | "cancel";
+export type VersionSource = "import_raw" | "import_clean" | "manual_edit" | "manual_delete" | "cancel" | "manual";
 
 export type OrderLine = {
   id: string;
@@ -296,6 +296,7 @@ export type OrderPageRow = {
   lossSibling?: boolean;
   syncedAt?: string | null;
   synced?: boolean;
+  source?: string;
 };
 
 export type OrderPage = {

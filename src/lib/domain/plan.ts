@@ -18,7 +18,7 @@ function sameSnapshot(previous: OrderVersion, next: OrderVersion): boolean {
 export function planImport(
   current: Map<string, OrderVersion>,
   lines: CleanLine[],
-  meta: { importId: string | null; source: OrderVersion["source"]; createdAt: string; createdBy: string | null; duplicate?: "overwrite" | "skip" },
+  meta: { importId: string | null; source: OrderVersion["source"]; createdAt: string; createdBy: string | null; duplicate?: "overwrite" | "skip"; protectManual?: boolean },
 ): ImportPlan {
   const versions: OrderVersion[] = [];
   const changes: FieldChange[] = [];
@@ -28,6 +28,10 @@ export function planImport(
     const no = group[0]?.noPesanan ?? "";
     if (!no) continue;
     const previous = current.get(no) ?? null;
+    if (previous?.source === "manual" && meta.protectManual) {
+      unchanged += 1;
+      continue;
+    }
     const next = versionFromCleanLines(group, {
       id: crypto.randomUUID(),
       versionNo: (previous?.versionNo ?? 0) + 1,

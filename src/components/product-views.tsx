@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
+import { canMaintainMaster } from "@/lib/auth/permissions";
 import { numId, rp } from "@/lib/format";
 
-type Catalog = { id: string; name: string; active: boolean };
+type Catalog = { id: string; name: string; active: boolean; code?: string; note?: string; updatedAt?: string | null; updatedBy?: string | null };
 type Product = { sku: string; name: string; categoryId: string | null; categoryName: string | null; brandId: string | null; brandName: string | null; accurateFound: string; hpp: number | null; hppSource: string | null; hppDate: string | null; hppCarried?: boolean; hppUpdatedAt?: string | null; active?: boolean };
 type Rank = { sku?: string; name: string; category?: string; brand?: string; qty: number; net: number; hpp?: number | null; profit?: number | null; carried?: boolean };
 type HppRun = { id?: string; status?: string; error?: string | null; okCount?: number; notFoundCount?: number; errorCount?: number; startedAt?: string; months?: string[] };
@@ -125,6 +126,7 @@ export function ProductList() {
   const [refreshAll, setRefreshAll] = useState(false);
   const [dataStatus, setDataStatus] = useState("active");
   const [page, setPage] = useState(0);
+  const [canAdd, setCanAdd] = useState(false);
 
   async function load(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus) {
     const params = new URLSearchParams({ q: nextQ });
@@ -147,7 +149,11 @@ export function ProductList() {
     setRuns(sync.runs ?? (sync.run ? [sync.run] : []));
     setConfigured(sync.configured);
   }
-  useEffect(() => { load().catch((error: Error) => setMessage(error.message));
+  useEffect(() => {
+    api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
+      setCanAdd(canMaintainMaster(me.role ?? "", me.permissions ?? [], "products.manage"));
+    }).catch(() => setCanAdd(false));
+    load().catch((error: Error) => setMessage(error.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -157,6 +163,10 @@ export function ProductList() {
 
   return (
     <div>
+      <div className="pagehead">
+        <div className="desc">Nama produk dari master item Jubelio. Brand dan kategori dikelola di web. HPP manual bulan berjalan opsional.</div>
+        <div className="actions">{canAdd ? <button className="btn pri" onClick={() => setEdit({ sku: "", name: "", unitCost: "" })}>Tambah</button> : null}</div>
+      </div>
       {message ? <div className="warnbox">{message}</div> : null}
       {!configured || run?.error === "Accurate belum terhubung." ? <div className="warnbox">Accurate belum terhubung. HPP tetap bisa diisi manual.</div> : null}
       <div className="card">
@@ -175,7 +185,6 @@ export function ProductList() {
           </div>
           <div className="f"><label>Status data</label><select value={dataStatus} onChange={(event) => { setDataStatus(event.target.value); setPage(0); load(q, filter, month, event.target.value).catch((error: Error) => setMessage(error.message)); }}><option value="active">Aktif</option><option value="deleted">Dihapus</option><option value="all">Semua</option></select></div>
           <div className="f"><label>Bulan HPP</label><input type="month" value={month} onChange={(event) => { setMonth(event.target.value); load(q, filter, event.target.value).catch((error: Error) => setMessage(error.message)); }} /></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => setEdit({ sku: "", name: "", unitCost: "" })}>Tambah produk</button></div>
           <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ run?: HppRun }>("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll }) }).then((result) => { setRun(result.run ?? null); if (result.run?.error && result.run.error !== "Snapshot bulan ini sudah lengkap.") setMessage(result.run.error); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP Accurate</button></div>
           <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ changed?: number; fallback?: number; pending?: number; error?: string | null }>("/api/products/names", { method: "POST" }).then((result) => { setMessage(result.error && result.error !== "Tidak ada nama yang perlu diperbarui." ? result.error : `Nama Jubelio: ${result.changed ?? 0} berubah, ${result.fallback ?? 0} tetap, ${result.pending ?? 0} antre.`); return load(); }).catch((error: Error) => setMessage(error.message))}>Perbarui nama Jubelio</button></div>
           <label className="btn"><input type="checkbox" checked={refreshAll} onChange={(event) => setRefreshAll(event.target.checked)} /> Perbarui semua SKU bulan ini</label>
@@ -211,7 +220,7 @@ export function ProductList() {
       <div className="pager">Menampilkan {pageRows.length ? page * 25 + 1 : 0}–{page * 25 + pageRows.length} dari {rows.length} · 25/halaman <button className="btn sm" disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="btn sm" disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></div>
       {edit ? (
         <div className="modal-bg on"><div className="modal">
-          <h2>{edit.sku ? "Edit produk" : "Produk baru"}</h2>
+          <h2>{edit.sku ? "Ubah produk" : "Tambah Produk"}</h2>
           <div className="grid g2">
             <div className="f"><label>SKU</label><input value={edit.sku ?? ""} onChange={(event) => setEdit({ ...edit, sku: event.target.value })} /></div>
             <div className="f"><label>Nama</label><input value={edit.name ?? ""} onChange={(event) => setEdit({ ...edit, name: event.target.value })} /></div>
@@ -240,6 +249,10 @@ export function HppMaster() {
   const [message, setMessage] = useState<string | null>(null);
   const [edit, setEdit] = useState<Product | null>(null);
   const [unitCost, setUnitCost] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSku, setAddSku] = useState("");
+  const [addCost, setAddCost] = useState("");
+  const [skuChoices, setSkuChoices] = useState<Product[]>([]);
 
   async function load(nextConfirmed = confirmed, nextMonth = month, nextQ = q) {
     const params = new URLSearchParams({ q: nextQ, dataStatus: "active" });
@@ -275,6 +288,7 @@ export function HppMaster() {
       <div className="pagehead">
         <div className="desc">Nilai di tabel adalah DPP dari Accurate. Dashboard memakai HPP inkl. PPN = DPP × 1,11. SKU tanpa HPP bernilai 0 dan tanggal updated kosong.</div>
         <div className="actions">
+          {canEdit ? <button className="btn pri" onClick={() => { setAddOpen(true); setAddSku(""); setAddCost(""); api<{ rows: Product[] }>("/api/products?dataStatus=active").then((result) => setSkuChoices(result.rows)).catch((error: Error) => setMessage(error.message)); }}>Tambah</button> : null}
           {canSync ? <button className="btn" onClick={() => api("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll: true }) }).then(() => { setMessage("Sync HPP bulan ini dijalankan."); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP bulan ini</button> : <span className="small mut">Sync HPP hanya untuk Super Admin dan Admin.</span>}
         </div>
       </div>
@@ -308,6 +322,20 @@ export function HppMaster() {
       </table></div>
       <div className="pager"><span>Menampilkan {shown.length ? page * pageSize + 1 : 0}–{page * pageSize + shown.length} dari {rows.length} · 25/halaman</span><span className="pg"><button disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="on">{page + 1}</button><button disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></span></div>
       </div>
+      {addOpen ? <div className="modal-bg on"><div className="modal">
+        <h2>Tambah HPP</h2>
+        <div className="note">SKU harus sudah ada di Master Produk. Nilai yang diisi adalah DPP. Dashboard memakai DPP × 1,11. Menyimpan mengisi Tgl Updated (sumber Manual). Sync Accurate berikutnya menimpa nilai ini bila SKU ditemukan.</div>
+        <div className="f mt"><label>SKU</label>
+          <input list="sku-hpp" value={addSku} onChange={(event) => setAddSku(event.target.value)} placeholder="Pilih SKU" />
+          <datalist id="sku-hpp">{skuChoices.map((row) => <option key={row.sku} value={row.sku}>{row.name}</option>)}</datalist>
+        </div>
+        <div className="f mt"><label>Bulan</label><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></div>
+        <div className="f mt"><label>Nilai DPP (Rp)</label><input type="number" value={addCost} onChange={(event) => setAddCost(event.target.value)} /></div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button className="btn" onClick={() => setAddOpen(false)}>Batal</button>
+          <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ hppOnly: true, sku: addSku, unitCost: Number(addCost), periodMonth: month ? `${month}-01` : undefined, note: "HPP manual" }) }).then(() => { setAddOpen(false); setMessage("HPP manual disimpan. Tgl Updated terisi."); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+        </div>
+      </div></div> : null}
       {edit ? <div className="modal-bg on"><div className="modal">
         <h2>HPP manual · {edit.sku}</h2>
         <div className="note">Menyimpan mengisi Tgl Updated. Sync Accurate berikutnya menimpa nilai manual bila SKU ditemukan.</div>
@@ -324,33 +352,54 @@ export function HppMaster() {
 export function CatalogEditor({ kind, title }: { kind: "kategori" | "merek"; title: string }) {
   const [rows, setRows] = useState<Catalog[]>([]);
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [note, setNote] = useState("");
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [canAdd, setCanAdd] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dataStatus, setDataStatus] = useState<"active" | "deleted">("active");
   const [replaceId, setReplaceId] = useState("");
   const [removing, setRemoving] = useState<Catalog | null>(null);
   async function load() { setRows(await api<Catalog[]>(`/api/catalog/${kind}`)); }
-  useEffect(() => { load().catch((err: Error) => setError(err.message));
+  useEffect(() => {
+    api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
+      setCanAdd(canMaintainMaster(me.role ?? "", me.permissions ?? [], "products.manage"));
+    }).catch(() => setCanAdd(false));
+    load().catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind]);
-  const visible = rows.filter((row) => dataStatus === "deleted" ? !row.active : row.active);
+  const visible = rows.filter((row) => dataStatus === "deleted" ? !row.active : row.active).filter((row) => {
+    const hay = `${row.name} ${row.code ?? ""} ${row.note ?? ""}`.toLowerCase();
+    return !q.trim() || hay.includes(q.trim().toLowerCase());
+  });
   return (
     <div>
       <div className="pagehead">
         <div className="desc">Status data <b>Aktif</b> atau <b>Dihapus</b>. Menghapus {title.toLowerCase()} yang masih dipakai wajib memilih pengganti.</div>
-        <div className="actions"><button className="btn pri" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ name }) }).then(() => { setName(""); return load(); }).catch((err: Error) => setError(err.message))}>Tambah</button></div>
+        <div className="actions">{canAdd ? <button className="btn pri" onClick={() => { setName(""); setCode(""); setNote(""); setOpen(true); }}>Tambah</button> : null}</div>
       </div>
       {error ? <div className="warnbox">{error}</div> : null}
       <div className="filterbar">
-        <div className="f grow"><label>Nama</label><input value={name} placeholder={`Nama ${title.toLowerCase()}`} onChange={(event) => setName(event.target.value)} /></div>
+        <div className="f grow"><label>Cari</label><input value={q} placeholder={`Nama ${title.toLowerCase()}`} onChange={(event) => setQ(event.target.value)} /></div>
         <div className="f"><label>Status data</label>
           <select value={dataStatus} onChange={(event) => setDataStatus(event.target.value as "active" | "deleted")}><option value="active">Aktif</option><option value="deleted">Dihapus</option></select>
         </div>
       </div>
-      <div className="tablecard"><table><thead><tr><th>Nama</th><th>Status data</th><th></th></tr></thead><tbody>
-        {visible.map((row) => <tr key={row.id} className={row.active ? "" : "deleted"}><td>{row.name}</td><td>{row.active ? <span className="pill p-ok">Aktif</span> : <span className="pill p-bad">Dihapus</span>}</td><td>
+      <div className="tablecard"><table><thead><tr><th>Nama</th>{kind === "merek" ? <th>Kode</th> : <th>Keterangan</th>}<th>Status data</th><th>Diperbarui</th><th></th></tr></thead><tbody>
+        {visible.map((row) => <tr key={row.id} className={row.active ? "" : "deleted"}><td>{row.name}</td><td>{kind === "merek" ? (row.code || "—") : (row.note || "—")}</td><td>{row.active ? <span className="pill p-ok">Aktif</span> : <span className="pill p-bad">Dihapus</span>}</td><td>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"}{row.updatedBy ? <div className="small mut">{row.updatedBy}</div> : null}</td><td>
           {row.active ? <button className="btn sm danger" onClick={() => { setRemoving(row); setReplaceId(""); }}>Hapus</button> : <button className="btn sm" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ id: row.id, name: row.name, active: true }) }).then(load)}>Pulihkan</button>}
         </td></tr>)}
       </tbody></table></div>
+      {open ? <div className="modal-bg on"><div className="modal">
+        <h2>Tambah {title}</h2>
+        <div className="f mt"><label>Nama {title.toLowerCase()}</label><input value={name} onChange={(event) => setName(event.target.value)} /></div>
+        {kind === "merek" ? <div className="f mt"><label>Kode</label><input value={code} onChange={(event) => setCode(event.target.value)} /></div> : <div className="f mt"><label>Keterangan</label><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button className="btn" onClick={() => setOpen(false)}>Batal</button>
+          <button className="btn pri" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ name, code, note }) }).then(() => { setOpen(false); return load(); }).catch((err: Error) => setError(err.message))}>Simpan</button>
+        </div>
+      </div></div> : null}
       {removing ? <div className="modal-bg on"><div className="modal">
         <h2>Hapus {title.toLowerCase()} {removing.name}?</h2>
         <div className="small mut">Jika masih dipakai produk, pilih pengganti. Produk dipindahkan sebelum status menjadi Dihapus.</div>

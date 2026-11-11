@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api-client";
 import { isBundlePending, isMappingPending } from "@/lib/domain/phase3";
 import type { AppSettings, BundleWeight, ChannelMapRow, CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
-import { OFFICIAL_CITIES, OFFICIAL_PROVINCES, suggestCity, suggestProvince, type NameSuggestion } from "@/lib/region/names";
+import { type GeoPair } from "@/lib/region/pairs";
+import { citiesInProvince, OFFICIAL_CITIES, OFFICIAL_PROVINCES, suggestCity, suggestProvince, type NameSuggestion } from "@/lib/region/names";
 
 type AccurateInfo = {
   settings: AppSettings;
@@ -28,8 +29,120 @@ function regionLabel(row: ReviewItem): string {
   return row.rawKey;
 }
 
-export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }) {
-  const [tab, setTab] = useState<"channel" | "province" | "city">(scope === "geo" ? "province" : "channel");
+function GeoMapping() {
+  const [rows, setRows] = useState<GeoPair[]>([]);
+  const [pending, setPending] = useState(0);
+  const [mapFilter, setMapFilter] = useState<"belum" | "sudah" | "semua">("belum");
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
+  const [edits, setEdits] = useState<Record<string, { provinceOfficial: string; cityOfficial: string }>>({});
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ provinceRaw: "", cityRaw: "", provinceOfficial: "", cityOfficial: "" });
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function load() {
+    const result = await api<{ rows: GeoPair[]; pending: number }>("/api/mappings/geo");
+    setRows(result.rows);
+    setPending(result.pending);
+    setEdits({});
+    setPage(0);
+    setMapFilter((current) => current === "belum" && result.pending === 0 ? "semua" : current);
+  }
+  useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
+
+  const filtered = rows.filter((row) => {
+    if (mapFilter === "belum" && !row.pending) return false;
+    if (mapFilter === "sudah" && row.pending) return false;
+    const hay = `${row.provinceRaw} ${row.cityRaw} ${row.provinceOfficial} ${row.cityOfficial}`.toLowerCase();
+    return !q.trim() || hay.includes(q.trim().toLowerCase());
+  });
+  const pageSize = 25;
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const shown = filtered.slice(page * pageSize, page * pageSize + pageSize);
+  const dateText = (value?: string | null) => value ? new Date(value).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—";
+  const valueOf = (row: GeoPair) => edits[row.key] ?? { provinceOfficial: row.provinceOfficial, cityOfficial: row.cityOfficial };
+
+  async function save(row: { provinceRaw: string; cityRaw: string; provinceOfficial: string; cityOfficial: string }) {
+    await api("/api/mappings/geo", { method: "POST", body: JSON.stringify(row) });
+    setMessage("Mapping provinsi dan kota disimpan.");
+    setAdding(false);
+    setDraft({ provinceRaw: "", cityRaw: "", provinceOfficial: "", cityOfficial: "" });
+    await load();
+  }
+
+  return (
+    <div>
+      <div className="pagehead">
+        <div className="desc">Satu baris untuk setiap kombinasi provinsi dan kota dari Jubelio. Tanggal mapping kosong = belum termapping.</div>
+        <div className="actions">
+          <button className="btn pri" onClick={() => setAdding(true)}>Tambah</button>
+        </div>
+      </div>
+      {pending ? <div className="pendbar"><b>{pending}</b> wilayah baru perlu di-mapping.</div> : <div className="note" style={{ marginBottom: 12 }}>Semua provinsi dan kota sudah termapping.</div>}
+      {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
+      <div className="filterbar">
+        <div className="f grow"><label>Cari</label><input value={q} placeholder="Provinsi atau kota…" onChange={(event) => { setQ(event.target.value); setPage(0); }} /></div>
+        <div className="f"><label>Status mapping</label>
+          <select value={mapFilter} onChange={(event) => { setMapFilter(event.target.value as "belum" | "sudah" | "semua"); setPage(0); }}>
+            <option value="belum">Belum termapping</option>
+            <option value="sudah">Sudah termapping</option>
+            <option value="semua">Semua</option>
+          </select>
+        </div>
+      </div>
+      <div className="tablecard"><div className="tscroll"><table className="cards small">
+        <thead><tr><th>Provinsi (Jubelio)</th><th>Provinsi standar</th><th>Kota (Jubelio)</th><th>Kota standar</th><th>Tanggal mapping</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {shown.map((row, index) => {
+            const value = valueOf(row);
+            const cityOptions = value.provinceOfficial ? citiesInProvince(value.provinceOfficial) : OFFICIAL_CITIES.map((city) => city.name);
+            const listId = `kota-geo-${index}`;
+            return (
+              <tr key={row.key}>
+                <td data-label="Provinsi (Jubelio)"><span className="mono">{row.provinceRaw || "—"}</span></td>
+                <td data-label="Provinsi standar">
+                  <input list="provinsi-resmi" value={value.provinceOfficial} placeholder={row.provinceSuggestion || "Pilih"} onChange={(event) => setEdits((current) => ({ ...current, [row.key]: { ...value, provinceOfficial: event.target.value } }))} />
+                  {row.pending && row.provinceSuggestion && value.provinceOfficial !== row.provinceSuggestion ? <div className="small mut">Saran: {row.provinceSuggestion}</div> : null}
+                </td>
+                <td data-label="Kota (Jubelio)"><span className="mono">{row.cityRaw || "—"}</span></td>
+                <td data-label="Kota standar">
+                  <input list={listId} value={value.cityOfficial} placeholder={row.citySuggestion || "Pilih"} disabled={!row.cityRaw} onChange={(event) => setEdits((current) => ({ ...current, [row.key]: { ...value, cityOfficial: event.target.value } }))} />
+                  <datalist id={listId}>{cityOptions.map((name) => <option key={name} value={name} />)}</datalist>
+                  {row.pending && row.citySuggestion && value.cityOfficial !== row.citySuggestion ? <div className="small mut">Saran: {row.citySuggestion}</div> : null}
+                </td>
+                <td data-label="Tanggal mapping">{row.pending ? <span className="pill p-warn">Belum termapping</span> : dateText(row.mappedAt)}</td>
+                <td data-label="Status">{row.pending ? <span className="pill p-warn">Belum</span> : <span className="pill p-ok">Sudah</span>}</td>
+                <td className="nowrap">
+                  <button className="btn sm" onClick={() => save({ provinceRaw: row.provinceRaw, cityRaw: row.cityRaw, provinceOfficial: value.provinceOfficial || row.provinceSuggestion, cityOfficial: row.cityRaw ? (value.cityOfficial || row.citySuggestion) : "" }).catch((error: Error) => setMessage(error.message))}>{row.pending ? "Setujui" : "Simpan"}</button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>
+      <div className="pager"><span>Menampilkan {shown.length ? page * pageSize + 1 : 0}–{page * pageSize + shown.length} dari {filtered.length} · 25/halaman</span><span className="pg"><button disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="on">{page + 1}</button><button disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></span></div>
+      </div>
+      <datalist id="provinsi-resmi">{OFFICIAL_PROVINCES.map((name) => <option key={name} value={name} />)}</datalist>
+      {adding ? <div className="modal-bg on"><div className="modal">
+        <h2>Tambah mapping wilayah</h2>
+        <div className="small mut">Satu kombinasi provinsi dan kota dari Jubelio.</div>
+        <div className="grid g2 mt">
+          <div className="f"><label>Provinsi (Jubelio)</label><input value={draft.provinceRaw} onChange={(event) => setDraft({ ...draft, provinceRaw: event.target.value })} /></div>
+          <div className="f"><label>Provinsi standar</label><input list="provinsi-resmi" value={draft.provinceOfficial} onChange={(event) => setDraft({ ...draft, provinceOfficial: event.target.value })} /></div>
+          <div className="f"><label>Kota (Jubelio)</label><input value={draft.cityRaw} onChange={(event) => setDraft({ ...draft, cityRaw: event.target.value })} /></div>
+          <div className="f"><label>Kota standar</label><input list="kota-resmi-baru" value={draft.cityOfficial} onChange={(event) => setDraft({ ...draft, cityOfficial: event.target.value })} /></div>
+        </div>
+        <datalist id="kota-resmi-baru">{(draft.provinceOfficial ? citiesInProvince(draft.provinceOfficial) : OFFICIAL_CITIES.map((city) => city.name)).map((name) => <option key={name} value={name} />)}</datalist>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button className="btn" onClick={() => setAdding(false)}>Batal</button>
+          <button className="btn pri" onClick={() => save(draft).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+        </div>
+      </div></div> : null}
+    </div>
+  );
+}
+
+function ChannelMapping() {
   const [mapFilter, setMapFilter] = useState<"belum" | "sudah" | "semua">("belum");
   const [channels, setChannels] = useState<ChannelMapRow[]>([]);
   const [provinces, setProvinces] = useState<ProvinceMapRow[]>([]);
@@ -37,8 +150,6 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [officials, setOfficials] = useState<Record<string, string>>({});
   const [bulk, setBulk] = useState<{ id: string; label: string; official: string }[] | null>(null);
-  const [provinceDraft, setProvinceDraft] = useState({ raw: "", official: "" });
-  const [cityDraft, setCityDraft] = useState({ provinceRaw: "", cityRaw: "", official: "" });
   const [message, setMessage] = useState<string | null>(null);
 
   async function load() {
@@ -54,9 +165,7 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
     const openReviews = review.filter((row) => row.status === "open");
     setReviews(openReviews);
     setBulk(null);
-    const pending = scope === "channel"
-      ? channel.filter((row) => isMappingPending(row)).length
-      : province.filter((row) => isMappingPending(row)).length + city.filter((row) => isMappingPending(row)).length;
+    const pending = channel.filter((row) => isMappingPending(row)).length;
     setMapFilter((current) => current === "belum" && pending === 0 ? "semua" : current);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
@@ -79,20 +188,6 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
     await load();
   }
 
-  async function saveProvince(row: { id?: string; raw: string; official: string }) {
-    await api("/api/mappings/province", { method: "POST", body: JSON.stringify({ ...row, needsReview: false }) });
-    setMessage("Mapping provinsi disimpan.");
-    setProvinceDraft({ raw: "", official: "" });
-    await load();
-  }
-
-  async function saveCity(row: { id?: string; provinceRaw: string; cityRaw: string; official: string }) {
-    await api("/api/mappings/city", { method: "POST", body: JSON.stringify({ ...row, needsReview: false }) });
-    setMessage("Mapping kota disimpan.");
-    setCityDraft({ provinceRaw: "", cityRaw: "", official: "" });
-    await load();
-  }
-
   async function saveReview(row: ReviewItem) {
     const official = (officials[row.id] ?? suggestions.get(row.id)?.official ?? "").trim();
     await api("/api/reviews", { method: "POST", body: JSON.stringify({ id: row.id, official }) });
@@ -108,18 +203,15 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
   }
 
   const pendingChannel = channels.filter((row) => isMappingPending(row)).length;
-  const pendingGeo = provinces.filter((row) => isMappingPending(row)).length + cities.filter((row) => isMappingPending(row)).length;
   const keep = <T extends { mappedAt?: string | null; needsReview?: boolean; official?: string; channel?: string; store?: string }>(rows: T[]) => rows.filter((row) => mapFilter === "semua" || (mapFilter === "belum") === isMappingPending(row));
   const dateText = (value?: string | null) => value ? new Date(value).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—";
 
   return (
     <div>
       <div className="pagehead">
-        <div className="desc">{scope === "channel"
-          ? "Mapping hanya Channel & Toko di Jubelio ke Channel & Toko di Web. Tanggal mapping kosong = belum termapping. Gudang, cabang, dan pelanggan tidak diisi di sini."
-          : "Provinsi dan kota Jubelio ke nama resmi. Tanggal mapping kosong = belum termapping."}</div>
+        <div className="desc">Mapping hanya Channel & Toko di Jubelio ke Channel & Toko di Web. Tanggal mapping kosong = belum termapping. Gudang, cabang, dan pelanggan tidak diisi di sini.</div>
       </div>
-      {(scope === "channel" ? pendingChannel : pendingGeo) ? <div className="pendbar"><b>{scope === "channel" ? pendingChannel : pendingGeo}</b> belum termapping.</div> : <div className="note" style={{ marginBottom: 12 }}>Tidak ada yang menunggu mapping.</div>}
+      {pendingChannel ? <div className="pendbar"><b>{pendingChannel}</b> belum termapping.</div> : <div className="note" style={{ marginBottom: 12 }}>Tidak ada yang menunggu mapping.</div>}
       <div className="filterbar">
         <div className="f"><label>Status mapping</label>
           <select value={mapFilter} onChange={(event) => setMapFilter(event.target.value as "belum" | "sudah" | "semua")}>
@@ -131,11 +223,7 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
       </div>
       {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
       {reviews.length ? <div className="warnbox" style={{ marginBottom: 12 }}>{reviews.length} nilai belum dipetakan. Provinsi dan kota dicocokkan tanpa membedakan huruf besar atau spasi. Saran nama resmi baru tersimpan setelah Anda menyetujuinya.</div> : <div className="note" style={{ marginBottom: 12 }}>Semua nilai yang sudah lewat impor punya baris mapping. Nilai baru akan muncul di sini.</div>}
-      {scope === "geo" ? <div className="tabs">
-        <button className={tab === "province" ? "on" : ""} onClick={() => setTab("province")}>Provinsi</button>
-        <button className={tab === "city" ? "on" : ""} onClick={() => setTab("city")}>Kota</button>
-      </div> : null}
-      {scope === "channel" && tab === "channel" ? (
+      {(
         <div className="card" style={{ overflow: "auto" }}>
           <button className="btn sm" onClick={() => setChannels((rows) => [...rows, { id: "", channelRaw: "", storeRaw: "", channel: "", store: "", needsReview: true }])}>+ Baris</button>
           <table className="cards"><thead><tr><th>Channel di Jubelio</th><th>Toko di Jubelio</th><th>Channel di Web</th><th>Toko di Web</th><th>Tanggal mapping</th><th></th></tr></thead><tbody>
@@ -154,47 +242,7 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
             })}
           </tbody></table>
         </div>
-      ) : null}
-      {scope === "geo" && tab === "province" ? (
-        <div className="card" style={{ overflow: "auto" }}>
-          <div className="filters" style={{ marginBottom: 8 }}>
-            <input placeholder="Provinsi Jubelio" value={provinceDraft.raw} onChange={(event) => setProvinceDraft({ ...provinceDraft, raw: event.target.value })} />
-            <input placeholder="Provinsi resmi" list="provinsi-resmi" value={provinceDraft.official} onChange={(event) => setProvinceDraft({ ...provinceDraft, official: event.target.value })} />
-            <button className="btn sm" onClick={() => saveProvince(provinceDraft).catch((error: Error) => setMessage(error.message))}>+ Baris</button>
-          </div>
-          <table className="cards"><thead><tr><th>Provinsi Jubelio</th><th>Provinsi resmi</th><th>Review</th><th></th></tr></thead><tbody>
-            {keep(provinces).map((row) => (
-              <tr key={row.id}>
-                <td data-label="Mentah">{row.raw || "(kosong)"}</td>
-                <td data-label="Resmi"><input value={row.official} list="provinsi-resmi" onChange={(event) => setProvinces((rows) => rows.map((item) => item.id === row.id ? { ...item, official: event.target.value } : item))} /></td>
-                <td data-label="Tanggal mapping">{isMappingPending(row) ? <span className="pill p-warn">Belum termapping</span> : dateText(row.mappedAt)}</td>
-                <td><button className="btn sm" onClick={() => saveProvince(row).catch((error: Error) => setMessage(error.message))}>Simpan</button></td>
-              </tr>
-            ))}
-          </tbody></table>
-        </div>
-      ) : null}
-      {scope === "geo" && tab === "city" ? (
-        <div className="card" style={{ overflow: "auto" }}>
-          <div className="filters" style={{ marginBottom: 8 }}>
-            <input placeholder="Provinsi mentah" value={cityDraft.provinceRaw} onChange={(event) => setCityDraft({ ...cityDraft, provinceRaw: event.target.value })} />
-            <input placeholder="Kota mentah" value={cityDraft.cityRaw} onChange={(event) => setCityDraft({ ...cityDraft, cityRaw: event.target.value })} />
-            <input placeholder="Kab/Kota resmi" list="kota-resmi" value={cityDraft.official} onChange={(event) => setCityDraft({ ...cityDraft, official: event.target.value })} />
-            <button className="btn sm" onClick={() => saveCity(cityDraft).catch((error: Error) => setMessage(error.message))}>+ Baris</button>
-          </div>
-          <table className="cards"><thead><tr><th>Provinsi mentah</th><th>Kota mentah</th><th>Kab/Kota resmi</th><th>Review</th><th></th></tr></thead><tbody>
-            {keep(cities).map((row) => (
-              <tr key={row.id}>
-                <td data-label="Provinsi">{row.provinceRaw || "(kosong)"}</td>
-                <td data-label="Kota">{row.cityRaw || "(kosong)"}</td>
-                <td data-label="Resmi"><input value={row.official} list="kota-resmi" onChange={(event) => setCities((rows) => rows.map((item) => item.id === row.id ? { ...item, official: event.target.value } : item))} /></td>
-                <td data-label="Tanggal mapping">{isMappingPending(row) ? <span className="pill p-warn">Belum termapping</span> : dateText(row.mappedAt)}</td>
-                <td><button className="btn sm" onClick={() => saveCity(row).catch((error: Error) => setMessage(error.message))}>Simpan</button></td>
-              </tr>
-            ))}
-          </tbody></table>
-        </div>
-      ) : null}
+      )}
       {reviews.length ? (
         <div className="card mt">
           <h3>Perlu review</h3>
@@ -241,6 +289,11 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
       <datalist id="kota-resmi">{cityOptions.map((name) => <option key={name} value={name} />)}</datalist>
     </div>
   );
+}
+
+export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }) {
+  if (scope === "geo") return <GeoMapping />;
+  return <ChannelMapping />;
 }
 
 export function BobotView() {

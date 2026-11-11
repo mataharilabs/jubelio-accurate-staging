@@ -23,6 +23,13 @@ export const PERMISSIONS = [
 export type Permission = (typeof PERMISSIONS)[number];
 
 export const SUPER_ADMIN_ROLE = "Super Admin";
+export const ADMIN_ROLE = "Admin";
+
+/** Super Admin and Admin may maintain master data. A custom role may too when it holds the permission. */
+export function canMaintainMaster(role: string, granted: readonly string[], permission: Permission): boolean {
+  if (role === SUPER_ADMIN_ROLE || role === ADMIN_ROLE) return true;
+  return hasPermission(granted, permission);
+}
 
 export function isPermission(value: string): value is Permission {
   return (PERMISSIONS as readonly string[]).includes(value);
