@@ -246,6 +246,7 @@ export type AppMeta = {
   accurateConnected: boolean;
   accurateConfigured: boolean;
   accurateUser: string | null;
+  ppnReportDate?: string | null;
 };
 
 export type OrderQuery = {
@@ -254,6 +255,9 @@ export type OrderQuery = {
   to?: string | null;
   statuses?: string[];
   dataStatus?: "active" | "deleted" | "all";
+  channels?: string[];
+  stores?: string[];
+  sync?: "" | "need" | "done";
   q: string;
   page: number;
   pageSize: number;

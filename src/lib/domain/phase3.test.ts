@@ -10,6 +10,7 @@ import {
   hppInclusive,
   hppIsPending,
   inSyncQueue,
+  needsAccurateSync,
   isBundlePending,
   isLossSiblingOrder,
   isMappingPending,
@@ -99,7 +100,9 @@ describe("phase 3 rules", () => {
     expect(accurateIntent({ status: "CANCELED", everSynced: true, orderDay: "2026-11-02", ppnReportDate: "2026-09-30" }).label).toBe("Hapus penjualan");
     expect(accurateIntent({ status: "CANCELED", everSynced: true, orderDay: "2026-09-01", ppnReportDate: "2026-09-30" }).label).toBe("Tidak diproses otomatis");
     expect(accurateIntent({ status: "RETURNED", everSynced: true, orderDay: "2026-11-02", ppnReportDate: "2026-09-30" }).send).toBe(false);
-    expect(accurateIntent({ status: "RETURNED", everSynced: false, orderDay: "2026-11-02", ppnReportDate: null }).label).toBe("Tidak dikirim");
+    expect(accurateIntent({ status: "RETURNED", everSynced: false, orderDay: "2026-11-02", ppnReportDate: null }).label).toBe("Tidak dikirim (retur sebelum sync)");
+    expect(accurateIntent({ status: "CANCELED", everSynced: true, orderDay: "2026-09-01", ppnReportDate: "2026-09-30" }).block).toBe(true);
+    expect(accurateIntent({ status: "COMPLETED", everSynced: false, orderDay: "2026-11-02", lossSibling: true }).label).toBe("Buat penjualan (Barang Hilang)");
     expect(accurateIntent({ status: "COMPLETED", everSynced: false, orderDay: "2026-11-02" }).label).toBe("Buat penjualan");
   });
 
@@ -109,6 +112,10 @@ describe("phase 3 rules", () => {
     expect(inSyncQueue({ category: "Berubah", contentUpdatedAt: "2026-11-02", syncedAt: "2026-11-03" })).toBe(false);
     expect(inSyncQueue({ category: "Returned", contentUpdatedAt: "2026-11-04", syncedAt: "2026-11-03" })).toBe(true);
     expect(inSyncQueue({ category: "Baru", ignored: true })).toBe(false);
+    expect(needsAccurateSync({ dataStatus: "deleted", contentUpdatedAt: "2026-11-04", syncedAt: null })).toBe(false);
+    expect(needsAccurateSync({ dataStatus: "active", contentUpdatedAt: "2026-11-01", syncedAt: null })).toBe(true);
+    expect(needsAccurateSync({ dataStatus: "active", contentUpdatedAt: "2026-11-04", syncedAt: "2026-11-03" })).toBe(true);
+    expect(needsAccurateSync({ dataStatus: "active", contentUpdatedAt: "2026-11-02", syncedAt: "2026-11-03" })).toBe(false);
   });
 
   it("marks an unmapped row and a new bundle as pending", () => {

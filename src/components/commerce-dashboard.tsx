@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { BarChart } from "@/components/charts";
+import { BarChart, CHART_PAL, Donut } from "@/components/charts";
 import { downloadExport } from "@/components/download";
 import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
@@ -232,6 +232,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <>
               <PerTable title="Penjualan per Toko" rows={report?.stores ?? []} compareRows={previous?.stores} metric={metric} compare={compare} />
               <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
+              <div className="card mt"><h3>Penjualan per Channel <small>{METRIC_LABEL[metric]}</small></h3><Donut items={(report?.channels ?? []).map((row, index) => ({ label: row.key || "—", value: Math.max(0, metricOf(row, metric)), color: CHART_PAL[index % CHART_PAL.length] }))} /></div>
             </>
           ) : (
             <>

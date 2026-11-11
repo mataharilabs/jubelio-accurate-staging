@@ -11,15 +11,35 @@ export async function executeSync(nos: string[], by: string) {
   const store = await getStore();
   const prepared = await store.prepareSync(nos);
   if (!prepared.length) throw new AppError("Pesanan yang dipilih tidak ada di antrian.");
-  const blocked = prepared.filter((item) => !item.row.selectable);
-  if (blocked.length) {
-    throw new AppError(`${blocked.length} pesanan belum dikonfirmasi, dianggap tidak berubah, atau tidak boleh disync (Status saja / Sama).`);
+  const settingsForIntent = await store.getSettings();
+  const described = prepared.map((item) => ({
+    item,
+    intent: accurateIntent({
+      status: item.row.current.status,
+      everSynced: Boolean(item.state?.lastSyncedVersionId || item.state?.accurateId),
+      orderDay: item.row.current.day,
+      ppnReportDate: settingsForIntent.ppnReportDate,
+      lossSibling: Boolean(item.row.current.lossSibling),
+    }),
+  }));
+  const closed = described.filter((row) => row.intent.block);
+  const silent = described.filter((row) => !row.intent.block && !row.intent.send && row.intent.label.startsWith("Tidak dikirim"));
+  const actionable = described.filter((row) => !row.intent.block && !row.intent.label.startsWith("Tidak dikirim"));
+  if (!actionable.length) {
+    throw new AppError(closed.length && !silent.length
+      ? "Cancel pada periode yang sudah tutup buku tidak diproses otomatis. Gunakan Abaikan."
+      : "Pesanan ini tidak dikirim ke Accurate. Gunakan Abaikan agar keluar dari antrean.");
   }
   if (!salesPushEnabled()) {
-    for (const item of prepared) {
-      await store.logSync({ actor: by, action: "blocked", noPesanan: item.row.noPesanan, note: "ACCURATE_SALES_PUSH belum enabled" });
+    for (const row of actionable) {
+      await store.logSync({ actor: by, action: "blocked", noPesanan: row.item.row.noPesanan, note: "ACCURATE_SALES_PUSH belum enabled" });
     }
-    throw new AppError("Pengiriman penjualan ke Accurate ditahan. Set ACCURATE_SALES_PUSH=enabled hanya setelah SOP disetujui. Tidak ada data yang dikirim.");
+    const held = closed.length ? ` ${closed.length} pesanan cancel yang sudah tutup buku tidak ikut dan hanya bisa diabaikan.` : "";
+    throw new AppError(`Pengiriman penjualan ke Accurate ditahan. Set ACCURATE_SALES_PUSH=enabled hanya setelah SOP disetujui. Tidak ada data yang dikirim.${held}`);
+  }
+  const blocked = actionable.filter((row) => row.intent.send && !row.item.row.selectable);
+  if (blocked.length) {
+    throw new AppError(`${blocked.length} pesanan belum dikonfirmasi, dianggap tidak berubah, atau tidak boleh disync (Status saja / Sama).`);
   }
   if (!accurateConfigured() || missingAccurateEnv().length) {
     throw new AppError("Accurate belum terhubung. Isi ACCURATE_CLIENT_ID dan ACCURATE_CLIENT_SECRET, lalu hubungkan di Koneksi Accurate. Tidak ada pesanan yang dikirim.");
@@ -32,20 +52,16 @@ export async function executeSync(nos: string[], by: string) {
     tokens = await refreshTokens(tokens);
     await store.saveTokens(tokens);
   }
-  const settings = await store.getSettings();
+  const settings = settingsForIntent;
   const databaseId = settings.accurateDatabaseId || accurateEnv().databaseId;
   if (!databaseId) throw new AppError("ID database Accurate belum diisi. Isi di Koneksi Accurate.");
   const opened = await openDatabase(tokens.accessToken, databaseId);
   const writes: SyncWrite[] = [];
-  for (const item of prepared) {
+  for (const row of actionable) {
+    const item = row.item;
+    const intent = row.intent;
     const category = item.row.category;
     const version = item.row.current;
-    const intent = accurateIntent({
-      status: version.status,
-      everSynced: Boolean(item.state?.lastSyncedVersionId || item.state?.accurateId),
-      orderDay: version.day,
-      ppnReportDate: settings.ppnReportDate,
-    });
     if (category === "Batal" || category === "Returned" || !intent.send) {
       const error = `${intent.label}. Cancel dan retur belum dikirim ke Accurate (stub).`;
       await store.logSync({ actor: by, action: "blocked", noPesanan: version.noPesanan, note: error });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
-import { isBundlePending, isMappingPending } from "@/lib/domain/phase3";
+import { isBundlePending, isMappingPending, needsAccurateSync } from "@/lib/domain/phase3";
 import { fail, requireSession } from "@/lib/http";
 import { listProducts } from "@/lib/products/service";
 
@@ -22,11 +22,23 @@ export async function GET() {
     } catch {
       hpp = 0;
     }
+    let orders = 0;
+    try {
+      const queue = await store.syncReview([]);
+      orders = queue.filter((row) => needsAccurateSync({
+        dataStatus: row.current.dataStatus,
+        contentUpdatedAt: row.current.contentUpdatedAt,
+        syncedAt: row.syncedAt,
+      })).length;
+    } catch {
+      orders = 0;
+    }
     return NextResponse.json({
       channel: channels.filter((row) => isMappingPending(row)).length,
       geo: provinces.filter((row) => isMappingPending(row)).length + cities.filter((row) => isMappingPending(row)).length,
       bundle: reviews.filter((row) => row.kind === "bobot" && row.status === "open").length + weights.filter((row) => isBundlePending(row)).length,
       hpp,
+      orders,
     });
   } catch (error) {
     return fail(error);

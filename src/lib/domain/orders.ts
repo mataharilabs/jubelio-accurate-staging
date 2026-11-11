@@ -145,10 +145,10 @@ function isCancelStatus(status: string | null | undefined): boolean {
 }
 
 export function classifyOrder(current: OrderVersion | null, synced: OrderVersion | null): SyncCategory | null {
+  if (!current) return null;
   const everSynced = Boolean(synced);
-  if (!current || current.source === "cancel" || current.source === "manual_delete" || isCancelStatus(current.status)) {
-    return everSynced ? "Batal" : null;
-  }
+  if (current.source === "manual_delete") return everSynced ? "Batal" : null;
+  if (current.source === "cancel" || isCancelStatus(current.status)) return "Batal";
   if (!everSynced || !synced) return "Baru";
   const changes = diffVersions(synced, current);
   if (!changes.length) return "Sama";

@@ -4,7 +4,7 @@ import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
-import { matchesOrderFilter } from "@/lib/domain/order-filter";
+import { matchesOrderFilter, matchesOrderScope } from "@/lib/domain/order-filter";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder } from "@/lib/domain/phase3";
 import { reportOf } from "@/lib/domain/aggregate";
@@ -142,6 +142,7 @@ export class LocalStore implements DataStore {
       accurateConnected: Boolean(this.db.tokens?.accessToken),
       accurateConfigured: accurateConfigured(),
       accurateUser: this.db.tokens?.userEmail ?? null,
+      ppnReportDate: this.db.settings.ppnReportDate || null,
     };
   }
 
@@ -185,6 +186,12 @@ export class LocalStore implements DataStore {
         storeName: version.storeName,
         city: version.city,
         channel: version.channel,
+      }, query) && matchesOrderScope({
+        channel: version.channel,
+        storeName: version.storeName,
+        dataStatus: version.dataStatus,
+        contentUpdatedAt: version.contentUpdatedAt ?? version.createdAt,
+        syncedAt: this.db.syncStates.find((item) => item.noPesanan === version.noPesanan)?.syncedAt ?? null,
       }, query));
     const pageSize = query.pageSize || 25;
     const pages = Math.max(1, Math.ceil(rows.length / pageSize));

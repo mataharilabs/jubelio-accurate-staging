@@ -37,15 +37,18 @@ export function UsersView() {
           <select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
           <button className="btn pri" onClick={() => api("/api/users", { method: "POST", body: JSON.stringify({ email, roleId, active: true }) }).then(() => { setEmail(""); load(); })}>Simpan</button>
         </div>
-        <table className="cards mt"><thead><tr><th>Email</th><th>Peran</th><th></th></tr></thead><tbody>
+        <table className="cards mt"><thead><tr><th>Nama</th><th>Email</th><th>Peran</th><th>Status</th><th></th></tr></thead><tbody>
           {users.map((user) => (
             <tr key={user.id}>
-              <td data-label="Email">{user.email}{user.active ? "" : " (nonaktif)"}</td>
-              <td data-label="Peran">{roles.find((role) => role.id === user.roleId)?.name}</td>
+              <td data-label="Nama">{user.displayName || "—"}</td>
+              <td data-label="Email">{user.email}</td>
+              <td data-label="Peran"><span className="pill p-pur">{roles.find((role) => role.id === user.roleId)?.name}</span></td>
+              <td data-label="Status">{user.active ? <span className="pill p-ok">Aktif</span> : <span className="pill p-gray">Nonaktif</span>}</td>
               <td><button className="btn sm" onClick={() => api("/api/users", { method: "POST", body: JSON.stringify({ id: user.id, email: user.email, roleId: user.roleId, active: !user.active }) }).then(load)}>{user.active ? "Nonaktifkan" : "Aktifkan"}</button></td>
             </tr>
           ))}
         </tbody></table>
+        <p className="small mut mt">Tidak membuat akun login dan tidak mengirim undangan. Email harus sudah bisa masuk.</p>
       </div>
       <div className="card">
         <h3>Peran</h3>
@@ -56,6 +59,12 @@ export function UsersView() {
           ))}
         </div>
         <button className="btn mt" onClick={() => api("/api/users", { method: "PUT", body: JSON.stringify({ name: roleName, permissions: perms }) }).then(() => { setRoleName(""); setPerms([]); load(); })}>Tambah peran</button>
+      </div>
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <h3>Hak akses per peran</h3>
+        <div className="tscroll"><table className="small"><thead><tr><th>Akses</th>{roles.map((role) => <th key={role.id} className="c">{role.name}</th>)}</tr></thead><tbody>
+          {PERMISSIONS.map((permission) => <tr key={permission}><td>{permission}</td>{roles.map((role) => <td key={role.id} className="c">{role.permissions.includes(permission) ? <span className="up">✓</span> : <span className="mut">—</span>}</td>)}</tr>)}
+        </tbody></table></div>
       </div>
     </div>
   );

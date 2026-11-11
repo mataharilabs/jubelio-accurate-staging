@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { downloadExport } from "@/components/download";
 import { api } from "@/lib/api-client";
-import type { OrderPage, OrderPageRow } from "@/lib/db/types";
-import { yesterdayWib } from "@/lib/domain/phase3";
-import { numId } from "@/lib/format";
+import type { AppMeta, OrderPage, OrderPageRow } from "@/lib/db/types";
+import { booksClosed, needsAccurateSync, yesterdayWib } from "@/lib/domain/phase3";
+import { numId, rp } from "@/lib/format";
 
 const CASES = [
   { id: 1 as const, label: "Case 1 · Balik semua", hint: "Semua barang kembali" },
@@ -17,11 +17,19 @@ export function OrdersView() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
+  const [channel, setChannel] = useState("");
+  const [storeName, setStoreName] = useState("");
+  const [sync, setSync] = useState<"" | "need" | "done">("");
   const [dataStatus, setDataStatus] = useState<"active" | "deleted" | "all">("active");
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
+  const [channelOptions, setChannelOptions] = useState<string[]>([]);
+  const [storeOptions, setStoreOptions] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [data, setData] = useState<OrderPage | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [ppn, setPpn] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [edit, setEdit] = useState<OrderPageRow | null>(null);
   const [form, setForm] = useState({ sku: "", qty: "", unitPrice: "", city: "", status: "COMPLETED", returnCase: 1 as 1 | 2 | 3 });
   const [lostQty, setLostQty] = useState("");
@@ -30,24 +38,32 @@ export function OrdersView() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus) {
+  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync) {
     const params = new URLSearchParams({ q: nextQ, page: String(nextPage), dataStatus: nextData });
     if (nextFrom) params.set("from", nextFrom);
     if (nextTo) params.set("to", nextTo);
     if (nextStatus) params.set("statuses", nextStatus);
+    if (nextChannel) params.set("channels", nextChannel);
+    if (nextStore) params.set("stores", nextStore);
+    if (nextSync) params.set("sync", nextSync);
     return params.toString();
   }
 
-  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus) {
-    setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData)}`));
+  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync) {
+    setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync)}`));
   }
 
   useEffect(() => {
-    api<{ options?: { statuses?: string[] } }>("/api/dashboard", {
+    api<{ options?: { statuses?: string[]; channels?: string[]; stores?: string[] } }>("/api/dashboard", {
       method: "POST",
       body: JSON.stringify({ query: { granularity: "day" }, includeOptions: true }),
-    }).then((result) => setStatusOptions(result.options?.statuses ?? [])).catch(() => undefined);
-    load(0, "", "", "", "", "active").catch((err: Error) => setError(err.message));
+    }).then((result) => {
+      setStatusOptions(result.options?.statuses ?? []);
+      setChannelOptions(result.options?.channels ?? []);
+      setStoreOptions(result.options?.stores ?? []);
+    }).catch(() => undefined);
+    api<AppMeta>("/api/meta").then((meta) => setPpn(meta.ppnReportDate ?? null)).catch(() => undefined);
+    load(0, "", "", "", "", "active", "", "", "").catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -82,6 +98,47 @@ export function OrdersView() {
     await load();
   }
 
+  async function bulkDelete() {
+    const nos = [...picked];
+    const blocked: string[] = [];
+    let removed = 0;
+    for (const noPesanan of nos) {
+      const sample = data?.rows.find((row) => row.noPesanan === noPesanan);
+      if (sample?.synced) {
+        blocked.push(noPesanan);
+        continue;
+      }
+      try {
+        await api("/api/orders/status", { method: "POST", body: JSON.stringify({ noPesanan, dataStatus: "deleted" }) });
+        removed += 1;
+      } catch (err) {
+        blocked.push(noPesanan);
+        setError(err instanceof Error ? err.message : "Gagal menghapus.");
+      }
+    }
+    setPicked(new Set());
+    if (blocked.length) setError(`${blocked.length} pesanan tidak dihapus karena sudah sync ke Accurate. Ubah status ke Cancel atau Retur, lalu sync.`);
+    if (removed) setMessage(`${removed} pesanan ditandai Dihapus.`);
+    await load();
+  }
+
+  function exportOrders(format: "xlsx" | "pdf") {
+    setExportOpen(false);
+    downloadExport(`pesanan.${format}`, {
+      target: "orders",
+      format,
+      from: from || null,
+      to: to || null,
+      statuses: status ? [status] : [],
+      q,
+      dataStatus,
+      channels: channel ? [channel] : [],
+      stores: storeName ? [storeName] : [],
+      sync,
+      nos: picked.size ? [...picked] : undefined,
+    }).catch((err: Error) => setError(err.message));
+  }
+
   async function pullYesterday() {
     const day = yesterdayWib();
     setMessage(`Menarik pesanan ${day} (H-1)…`);
@@ -111,11 +168,12 @@ export function OrdersView() {
         <div className="actions">
           <button className="btn pri" onClick={() => pullYesterday().catch((err: Error) => setError(err.message))}>Sync H-1</button>
           <label className="btn">Import<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file).catch((err: Error) => setError(err.message)); }} /></label>
-          <select value={duplicate} onChange={(event) => setDuplicate(event.target.value as "overwrite" | "skip")} aria-label="Duplikat impor">
+          <select value={duplicate} onChange={(event) => setDuplicate(event.target.value as "overwrite" | "skip")} aria-label="Jika nomor pesanan sudah ada">
             <option value="overwrite">Timpa duplikat</option>
             <option value="skip">Lewati duplikat</option>
           </select>
-          <button className="btn" onClick={() => downloadExport("pesanan.xlsx", { target: "orders", format: "xlsx", from: from || null, to: to || null, statuses: status ? [status] : [], q }).catch((err: Error) => setError(err.message))}>Export</button>
+          <button className="btn danger" disabled={!picked.size} onClick={() => bulkDelete().catch((err: Error) => setError(err.message))}>Hapus massal {picked.size ? `(${picked.size})` : ""}</button>
+          <button className="btn" onClick={() => setExportOpen(true)}>Export {picked.size ? `(${picked.size})` : ""}</button>
           <button className="btn" onClick={() => setRules(true)}>Aturan Jubelio</button>
         </div>
       </div>
@@ -131,39 +189,63 @@ export function OrdersView() {
             {statusOptions.map((item) => <option key={item}>{item}</option>)}
           </select>
         </div>
+        <div className="f"><label>Channel</label>
+          <select value={channel} onChange={(event) => { setChannel(event.target.value); setPage(0); load(0, from, to, status, q, dataStatus, event.target.value, storeName, sync).catch((err: Error) => setError(err.message)); }}>
+            <option value="">Semua</option>
+            {channelOptions.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </div>
+        <div className="f"><label>Toko</label>
+          <select value={storeName} onChange={(event) => { setStoreName(event.target.value); setPage(0); load(0, from, to, status, q, dataStatus, channel, event.target.value, sync).catch((err: Error) => setError(err.message)); }}>
+            <option value="">Semua</option>
+            {storeOptions.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </div>
         <div className="f"><label>Status data</label>
-          <select value={dataStatus} onChange={(event) => { const value = event.target.value as "active" | "deleted" | "all"; setDataStatus(value); setPage(0); load(0, from, to, status, q, value).catch((err: Error) => setError(err.message)); }}>
+          <select value={dataStatus} onChange={(event) => { const value = event.target.value as "active" | "deleted" | "all"; setDataStatus(value); setPage(0); load(0, from, to, status, q, value, channel, storeName, sync).catch((err: Error) => setError(err.message)); }}>
             <option value="active">Aktif</option>
             <option value="deleted">Dihapus</option>
             <option value="all">Semua</option>
+          </select>
+        </div>
+        <div className="f"><label>Sinkron Accurate</label>
+          <select value={sync} onChange={(event) => { const value = event.target.value as "" | "need" | "done"; setSync(value); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, value).catch((err: Error) => setError(err.message)); }}>
+            <option value="">Semua</option>
+            <option value="need">Perlu sync</option>
+            <option value="done">Sudah sync</option>
           </select>
         </div>
       </div>
       <div className="tablecard">
         <div className="tscroll">
           <table className="small cards">
-            <thead><tr><th>Tanggal</th><th>No pesanan</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Harga</th><th>Status pesanan</th><th>Status data</th><th>Retur</th><th></th></tr></thead>
+            <thead><tr><th></th><th>No pesanan</th><th>Tgl</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Revenue</th><th>Status</th><th>Status data</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
             <tbody>
-              {data?.rows.map((row) => (
+              {data?.rows.map((row) => {
+                const need = needsAccurateSync({ dataStatus: row.dataStatus, contentUpdatedAt: row.contentUpdatedAt, syncedAt: row.syncedAt });
+                return (
                 <tr key={row.lineId} className={row.dataStatus === "deleted" ? "deleted" : ""}>
+                  <td><input type="checkbox" checked={picked.has(row.noPesanan)} onChange={(event) => setPicked((current) => { const next = new Set(current); if (event.target.checked) next.add(row.noPesanan); else next.delete(row.noPesanan); return next; })} /></td>
+                  <td data-label="No pesanan">{row.noPesanan}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
                   <td data-label="Tanggal">{row.day}</td>
-                  <td data-label="No pesanan">{row.noPesanan}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}</td>
                   <td data-label="Channel">{row.channel}</td>
                   <td data-label="Toko">{row.storeName}</td>
                   <td data-label="SKU">{row.sku}<div className="mut">{row.productName}</div></td>
                   <td data-label="Qty" className="n">{numId(row.qty)}</td>
-                  <td data-label="Harga" className="n">{numId(row.unitPrice)}</td>
-                  <td data-label="Status">{row.status || "—"}</td>
+                  <td data-label="Revenue" className="n">{rp((row.revenuePerUnit ?? 0) * row.qty)}</td>
+                  <td data-label="Status">{row.status || "—"}{row.returnCase ? <div className="small mut">Case {row.returnCase}</div> : null}</td>
                   <td data-label="Status data">{row.dataStatus === "deleted" ? <span className="pill p-bad">Dihapus</span> : <span className="pill p-ok">Aktif</span>}</td>
-                  <td data-label="Retur">{row.returnCase ? <span className="pill p-pur">Case {row.returnCase}</span> : "—"}</td>
+                  <td data-label="Updated">{row.contentUpdatedAt ? row.contentUpdatedAt.slice(0, 16).replace("T", " ") : "—"}</td>
+                  <td data-label="Synced">{row.syncedAt ? row.syncedAt.slice(0, 16).replace("T", " ") : "—"}{need ? <div><span className="pill p-warn">Perlu sync</span></div> : null}</td>
                   <td className="nowrap">
                     <button className="btn sm" onClick={() => { setEdit(row); setForm({ sku: row.sku, qty: String(row.qty), unitPrice: String(row.unitPrice ?? ""), city: row.city, status: row.status || "COMPLETED", returnCase: row.returnCase || 1 }); setLostQty(String(row.qty)); }}>Ubah</button>
                     {row.dataStatus === "deleted"
                       ? <button className="btn sm" onClick={() => setOrderStatus(row, "active").catch((err: Error) => setError(err.message))}>Pulihkan</button>
-                      : <button className="btn sm" disabled={Boolean(row.synced)} title={row.synced ? "Sudah sync, tidak bisa dihapus" : "Soft delete"} onClick={() => setOrderStatus(row, "deleted").catch((err: Error) => setError(err.message))}>Hapus</button>}
+                      : <button className="btn sm" disabled={Boolean(row.synced)} title={row.synced ? "Sudah sync ke Accurate — tidak bisa dihapus. Ubah status ke Cancel atau Retur, lalu sync." : "Soft delete"} onClick={() => setOrderStatus(row, "deleted").catch((err: Error) => setError(err.message))}>Hapus</button>}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -203,14 +285,27 @@ export function OrdersView() {
                   </label>
                 ))}
               </div>
-              {form.returnCase === 2 ? <div className="f mt"><label>Qty yang hilang (harga 0, channel Internal, toko Barang Hilang)</label><input type="number" value={lostQty} onChange={(event) => setLostQty(event.target.value)} /></div> : null}
+              {form.returnCase === 2 ? <div className="f mt"><label>Qty hilang untuk SKU {form.sku || edit.sku} (harga 0, channel Internal, toko Barang Hilang)</label><input type="number" value={lostQty} onChange={(event) => setLostQty(event.target.value)} /></div> : null}
+              {form.returnCase === 3 ? <div className="small mut mt">Case 3 membuat pesanan -R untuk semua produk pesanan ini, harga 0.</div> : null}
               <div className="small mut mt">Harga retur di web tidak di-nol-kan. Case 2 dan 3 membuat pesanan -R terpisah.</div>
             </div>
           ) : null}
-          {form.status === "CANCELED" ? <div className="warnbox mt">Cancel mengubah status menjadi CANCELED dan tidak men-soft-delete pesanan. Accurate hanya memprosesnya lewat antrean sync, dan pengiriman masih ditahan.</div> : null}
+          {form.status === "CANCELED" ? <div className="warnbox mt">{booksClosed(edit.day, ppn) ? "Pesanan ini sudah tutup buku. Cancel tidak diproses otomatis ke Accurate — di antrean hanya bisa diabaikan, lalu Finance menangani manual." : "Cancel mengubah status menjadi CANCELED dan tidak men-soft-delete pesanan. Accurate menghapus penjualan saat sync. Pengiriman masih ditahan guard."}</div> : null}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
             <button className="btn" onClick={() => setEdit(null)}>Batal</button>
             <button className="btn pri" onClick={() => save().catch((err: Error) => setError(err.message))}>Simpan</button>
+          </div>
+        </div></div>
+      ) : null}
+      {exportOpen ? (
+        <div className="modal-bg on" onClick={(event) => { if (event.target === event.currentTarget) setExportOpen(false); }}><div className="modal">
+          <h2>Export pesanan</h2>
+          <div className="small mut">Jika tidak ada yang dicentang, semua hasil saringan yang diunduh. PDF dibatasi 200 baris; selebihnya pakai Excel.</div>
+          <div className="small mt">{picked.size ? `${picked.size} pesanan dicentang.` : "Tidak ada centang — semua hasil filter."}</div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <button className="btn" onClick={() => setExportOpen(false)}>Batal</button>
+            <button className="btn" onClick={() => exportOrders("xlsx")}>Excel</button>
+            <button className="btn pri" onClick={() => exportOrders("pdf")}>PDF</button>
           </div>
         </div></div>
       ) : null}
