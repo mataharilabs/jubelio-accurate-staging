@@ -18,6 +18,7 @@ export async function GET(request: Request) {
       notInAccurate: url.searchParams.get("notInAccurate") === "1",
       incomplete: url.searchParams.get("incomplete") === "1",
       confirmed: url.searchParams.get("confirmed") === "yes" || url.searchParams.get("confirmed") === "no" ? url.searchParams.get("confirmed") as "yes" | "no" : undefined,
+      ordered: url.searchParams.get("ordered") === "yes" || url.searchParams.get("ordered") === "no" ? url.searchParams.get("ordered") as "yes" | "no" : undefined,
       active: url.searchParams.get("dataStatus") === "deleted" || url.searchParams.get("dataStatus") === "all" ? url.searchParams.get("dataStatus") as "deleted" | "all" : "active",
       month,
     });

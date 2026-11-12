@@ -46,6 +46,22 @@ describe("Jubelio item name", () => {
     expect(detail).toEqual({ id: 9, name: "Nama master" });
   });
 
+  it("does not create products from items outside the allowed locations", () => {
+    const bundles = new Map([[7, { bundles: [{ item_id: 70, item_code: "COMP", item_name: "Komponen" }] }]]);
+    const orders = [{
+      location_name: "Gudang lain",
+      items: [
+        { item_id: 7, item_code: "BDL", description: "Paket", is_bundle: true, loc_name: "Gudang lain" },
+        { item_id: 8, item_code: "KEEP", description: "Yang lolos", is_bundle: false, loc_name: "Lintas Sby" },
+        { item_id: 9, item_code: "DROP", description: "Lokasi lain", is_bundle: false, loc_name: "East Java & Co" },
+        { item_id: 10, item_code: "ORDERLOC", description: "Ikut lokasi order", is_bundle: false, loc_name: "" },
+      ],
+    }];
+    const seeds = productSeedsFromOrders(orders, bundles, { locations: ["Lintas Sby"] });
+    expect(seeds.map((seed) => seed.sku)).toEqual(["KEEP"]);
+    expect(seeds.some((seed) => seed.sku === "COMP" || seed.sku === "DROP" || seed.sku === "ORDERLOC")).toBe(false);
+  });
+
   it("resolves a plain line to its item id and a bundle to the component id", () => {
     const bundles = new Map([[7, { bundles: [{ item_id: 70, item_code: "40100083-01", item_name: "Bee & Flower Cendana" }] }]]);
     const seeds = productSeedsFromOrders([{

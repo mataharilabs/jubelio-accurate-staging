@@ -14,6 +14,7 @@ import {
   weightMap,
 } from "@/lib/cleanup/read-xlsx";
 import type { DataStore } from "@/lib/db/store";
+import { componentWeightMap } from "@/lib/domain/bundle-weight";
 import type { RapikanMaps } from "@/lib/cleanup/rapikan";
 
 const root = process.cwd();
@@ -23,14 +24,21 @@ function file(name: string) {
 }
 
 export async function rapikanMaps(store: DataStore): Promise<RapikanMaps> {
-  const [weights, channels, provinces, cities] = await Promise.all([
+  const [weights, components, channels, provinces, cities] = await Promise.all([
     store.listWeights(),
+    store.listBundleComponents().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "";
+      if (/0011_product_names_bundle_weights/i.test(message)) return [];
+      throw error;
+    }),
     store.listChannelMaps(),
     store.listProvinceMaps(),
     store.listCityMaps(),
   ]);
+  const componentWeights = componentWeightMap(components);
   return {
     weights: weightMap(weights.map((row) => ({ bundleKey: row.bundleKey, bobot: row.bobot }))),
+    componentWeights,
     channels: channelMap(channels.map((row) => ({
       channelRaw: row.channelRaw,
       storeRaw: row.storeRaw,

@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api-client";
+import { splitWeights, weightTotalError } from "@/lib/domain/bundle-weight";
 import { isBundlePending, isMappingPending } from "@/lib/domain/phase3";
-import type { AppSettings, BundleWeight, ChannelMapRow, CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
+import type { AppSettings, BundleDefinition, ChannelMapRow, CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
 import { type GeoPair } from "@/lib/region/pairs";
 import { citiesInProvince, OFFICIAL_CITIES, OFFICIAL_PROVINCES, suggestCity, suggestProvince, type NameSuggestion } from "@/lib/region/names";
 
@@ -296,28 +297,69 @@ export function MappingView({ scope = "channel" }: { scope?: "channel" | "geo" }
   return <ChannelMapping />;
 }
 
+type DraftRow = { sku: string; qty: string; weight: string };
+
+function blankComponent(): DraftRow {
+  return { sku: "", qty: "1", weight: "100" };
+}
+
 export function BobotView() {
-  const [weights, setWeights] = useState<BundleWeight[]>([]);
+  const [bundles, setBundles] = useState<BundleDefinition[]>([]);
   const [reviews, setReviews] = useState<{ rawKey: string }[]>([]);
-  const [key, setKey] = useState("");
-  const [bobot, setBobot] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [filter, setFilter] = useState<"belum" | "sudah" | "semua">("belum");
+  const [draft, setDraft] = useState<{ bundleSku: string; originalSku: string; creating: boolean; rows: DraftRow[] } | null>(null);
 
   async function load() {
-    const result = await api<{ weights: BundleWeight[]; reviews: { rawKey: string }[] }>("/api/weights");
-    setWeights(result.weights);
+    const result = await api<{ bundles: BundleDefinition[]; reviews: { rawKey: string }[] }>("/api/weights");
+    setBundles(result.bundles);
     setReviews(result.reviews);
-    const waiting = result.reviews.length + result.weights.filter((row) => isBundlePending(row)).length;
+    const waiting = result.reviews.length + result.bundles.filter((row) => isBundlePending(row)).length;
     setFilter((current) => current === "belum" && waiting === 0 ? "semua" : current);
   }
   useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
 
-  const pending = reviews.length + weights.filter((row) => isBundlePending(row)).length;
-  const shown = weights.filter((row) => filter === "semua" || (filter === "belum") === isBundlePending(row));
+  function applySplit(mode: "qty" | "equal") {
+    setDraft((current) => {
+      if (!current) return current;
+      const weights = splitWeights(current.rows.map((row) => ({ qty: Number(row.qty) || 0 })), mode);
+      return { ...current, rows: current.rows.map((row, index) => ({ ...row, weight: String(weights[index] ?? "") })) };
+    });
+  }
+
+  function saveDraft() {
+    if (!draft) return;
+    const components = draft.rows.map((row) => ({ sku: row.sku.trim(), qty: Number(row.qty), weightPct: Number(row.weight) }));
+    if (!draft.bundleSku.trim()) {
+      setMessage("SKU paket wajib diisi.");
+      return;
+    }
+    const error = weightTotalError(components);
+    if (error) {
+      setMessage(error);
+      return;
+    }
+    const bundleSku = draft.bundleSku.trim();
+    api("/api/weights", { method: "POST", body: JSON.stringify({ bundleSku, components }) })
+      .then(() => {
+        if (draft.originalSku && draft.originalSku !== bundleSku) {
+          return api("/api/weights", { method: "POST", body: JSON.stringify({ deleteBundle: draft.originalSku }) });
+        }
+        return null;
+      })
+      .then(() => { setDraft(null); setMessage(null); return load(); })
+      .catch((err: Error) => setMessage(err.message));
+  }
+
+  const pending = reviews.length + bundles.filter((row) => isBundlePending(row)).length;
+  const shown = bundles.filter((row) => filter === "semua" || (filter === "belum") === isBundlePending(row));
+  const total = draft ? Math.round(draft.rows.reduce((sum, row) => sum + (Number(row.weight) || 0), 0) * 10000) / 10000 : 0;
   return (
     <div>
-      <div className="pagehead"><div className="desc">Tanggal updated kosong = bobot perlu keputusan. Bundle baru dari Jubelio tetap muncul sampai bobotnya disimpan.</div></div>
+      <div className="pagehead">
+        <div className="desc">Setiap paket punya daftar SKU komponen, qty, dan bobot persen. Total bobot harus 100%. Revenue dan diskon dibagi menurut persen itu. HPP komponen tetap HPP satuan × qty.</div>
+        <div className="actions"><button className="btn pri" onClick={() => { setMessage(null); setDraft({ bundleSku: "", originalSku: "", creating: true, rows: [blankComponent()] }); }}>Tambah</button></div>
+      </div>
       {pending ? <div className="pendbar"><b>{pending}</b> bobot belum terupdate.</div> : null}
       <div className="filterbar">
         <div className="f"><label>Status</label>
@@ -327,13 +369,6 @@ export function BobotView() {
             <option value="semua">Semua</option>
           </select>
         </div>
-      </div>
-      {message ? <div className="note">{message}</div> : null}
-      {filter !== "sudah" && reviews.length ? <div className="warnbox">Bobot belum ada untuk: {reviews.map((row) => row.rawKey).join(", ")}.</div> : null}
-      <div className="filters mt">
-        <input placeholder="SKU-item_code_bundle" value={key} onChange={(event) => setKey(event.target.value)} />
-        <input placeholder="Bobot" value={bobot} onChange={(event) => setBobot(event.target.value)} />
-        <button className="btn pri" onClick={() => api("/api/weights", { method: "POST", body: JSON.stringify({ bundleKey: key, bobot: Number(bobot) }) }).then(() => { setKey(""); setBobot(""); return load(); })}>Tambah</button>
         <label className="btn">Impor Excel<input type="file" accept=".xlsx" hidden onChange={(event) => {
           const file = event.target.files?.[0];
           if (!file) return;
@@ -342,9 +377,55 @@ export function BobotView() {
           fetch("/api/weights", { method: "POST", body: form }).then(() => load());
         }} /></label>
       </div>
-      <div className="tablecard mt"><div className="tscroll"><table className="cards"><thead><tr><th>Kunci</th><th>Bobot</th><th>Tanggal updated</th><th></th></tr></thead><tbody>
-        {shown.map((row) => <tr key={row.id}><td data-label="Kunci">{row.bundleKey}</td><td data-label="Bobot">{row.bobot}</td><td data-label="Tanggal updated">{isBundlePending(row) ? <span className="pill p-warn">Belum terupdate</span> : new Date(row.confirmedAt || row.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}</td><td><button className="btn sm" onClick={() => api("/api/weights", { method: "POST", body: JSON.stringify({ deleteId: row.id }) }).then(load)}>Hapus</button></td></tr>)}
+      {message ? <div className="note">{message}</div> : null}
+      {filter !== "sudah" && reviews.length ? <div className="warnbox">Bobot belum ada untuk: {reviews.map((row) => row.rawKey).join(", ")}.</div> : null}
+      <div className="tablecard mt"><div className="tscroll"><table className="cards"><thead><tr><th>Paket</th><th>Komponen</th><th>Total</th><th>Tanggal updated</th><th></th></tr></thead><tbody>
+        {shown.map((row) => {
+          const sum = Math.round(row.components.reduce((value, item) => value + item.weightPct, 0) * 10000) / 10000;
+          return (
+            <tr key={row.bundleSku}>
+              <td data-label="Paket">{row.bundleSku}</td>
+              <td data-label="Komponen">{row.components.map((item) => `${item.sku} × ${item.qty} · ${item.weightPct}%`).join(", ") || "—"}</td>
+              <td data-label="Total">{sum}%</td>
+              <td data-label="Tanggal updated">{isBundlePending(row) ? <span className="pill p-warn">Belum terupdate</span> : row.updatedAt ? new Date(row.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"}</td>
+              <td>
+                <button className="btn sm" onClick={() => setDraft({ bundleSku: row.bundleSku, originalSku: row.bundleSku, creating: false, rows: row.components.map((item) => ({ sku: item.sku, qty: String(item.qty), weight: String(item.weightPct) })) })}>Edit</button>
+                <button className="btn sm" onClick={() => api("/api/weights", { method: "POST", body: JSON.stringify({ deleteBundle: row.bundleSku }) }).then(load)}>Hapus</button>
+              </td>
+            </tr>
+          );
+        })}
       </tbody></table></div></div>
+      {draft ? (
+        <div className="modal-bg on"><div className="modal">
+          <h2>{draft.creating ? "Tambah paket" : "Ubah paket"}</h2>
+          <div className="f"><label>SKU paket</label><input value={draft.bundleSku} onChange={(event) => setDraft({ ...draft, bundleSku: event.target.value })} /></div>
+          <div className="note mt">Bobot dibagi rata atau mengikuti qty. Komponen terakhir menampung selisih pembulatan supaya total 100%.</div>
+          {draft.rows.map((row, index) => (
+            <div className="filters mt" key={index}>
+              <input placeholder="SKU komponen" value={row.sku} onChange={(event) => setDraft({ ...draft, rows: draft.rows.map((item, itemIndex) => itemIndex === index ? { ...item, sku: event.target.value } : item) })} />
+              <input placeholder="Qty" type="number" value={row.qty} onChange={(event) => setDraft({ ...draft, rows: draft.rows.map((item, itemIndex) => itemIndex === index ? { ...item, qty: event.target.value } : item) })} />
+              <input placeholder="Bobot %" type="number" value={row.weight} onChange={(event) => setDraft({ ...draft, rows: draft.rows.map((item, itemIndex) => itemIndex === index ? { ...item, weight: event.target.value } : item) })} />
+              <button className="btn sm" onClick={() => setDraft({ ...draft, rows: draft.rows.filter((_, itemIndex) => itemIndex !== index) })}>Hapus</button>
+            </div>
+          ))}
+          <div className="filters mt">
+            <button className="btn" onClick={() => setDraft((current) => {
+              if (!current) return current;
+              const rows = [...current.rows, { sku: "", qty: "1", weight: "" }];
+              const weights = splitWeights(rows.map((row) => ({ qty: Number(row.qty) || 0 })), "qty");
+              return { ...current, rows: rows.map((row, rowIndex) => ({ ...row, weight: String(weights[rowIndex] ?? "") })) };
+            })}>Tambah komponen</button>
+            <button className="btn" onClick={() => applySplit("equal")}>Bagi rata</button>
+            <button className="btn" onClick={() => applySplit("qty")}>Sesuai qty</button>
+            <span className={total === 100 ? "pill p-ok" : "pill p-warn"}>Total {total}%</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={() => setDraft(null)}>Batal</button>
+            <button className="btn pri" onClick={saveDraft}>Simpan</button>
+          </div>
+        </div></div>
+      ) : null}
     </div>
   );
 }

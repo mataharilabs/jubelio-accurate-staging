@@ -4,6 +4,7 @@
  * unique prefix check. Anything still unknown is kept raw and flagged.
  */
 
+import { allocateBundleAmounts, parentFromBundleKey, type WeightPart } from "@/lib/domain/bundle-weight";
 import { findCity, findProvince } from "@/lib/region/names";
 
 export const DROPPED_STATUSES = new Set(["PENDING", "PAID", "CANCELED", "CANCELLED", "CANCEL"]);
@@ -121,7 +122,10 @@ export type CleanResult = {
 };
 
 export type RapikanMaps = {
+  /** Legacy per-item bobot. Ignored when componentWeights is set. */
   weights: Map<string, number>;
+  /** Per-component percentages keyed by parent bundle SKU. Last component absorbs rounding. */
+  componentWeights?: Map<string, WeightPart[]> | null;
   channels: Map<string, { channel: string; store: string }>;
   provinces: Map<string, ProvinceMapping>;
   cities: Map<string, CityMapping>;
@@ -227,7 +231,51 @@ type Working = {
   flags: string[];
   pos: boolean;
   provinceRawEmpty: boolean;
+  parentSku: string | null;
+  parentAmount: number | null;
+  bundleGroup: number | null;
+  allocatedSub: number | null;
 };
+
+function applyComponentWeights(rows: Working[], defs: Map<string, WeightPart[]>, missing: Set<string>) {
+  const groups = new Map<number, Working[]>();
+  for (const row of rows) {
+    if (row.bundleGroup == null) continue;
+    const list = groups.get(row.bundleGroup) ?? [];
+    list.push(row);
+    groups.set(row.bundleGroup, list);
+  }
+  for (const list of groups.values()) {
+    const parent = list[0]?.parentSku ?? null;
+    const defined = parent ? defs.get(parent) : undefined;
+    const bySku = new Map((defined ?? []).map((part) => [part.sku, part]));
+    const order = new Map((defined ?? []).map((part, index) => [part.sku, index]));
+    const parentAmount = list.find((row) => row.parentAmount != null)?.parentAmount ?? null;
+    const usable = list.filter((row) => parentAmount != null && bySku.has(row.sku));
+    for (const row of list) {
+      if (usable.includes(row)) continue;
+      row.missingWeight = true;
+      row.unitPrice = null;
+      row.allocatedSub = null;
+      if (!row.flags.includes("bobot")) row.flags.push("bobot");
+      if (row.bundleKey) missing.add(row.bundleKey);
+    }
+    if (!usable.length || parentAmount == null) continue;
+    usable.sort((a, b) => (order.get(a.sku) ?? 0) - (order.get(b.sku) ?? 0));
+    const allocated = allocateBundleAmounts(parentAmount, usable.map((row) => ({
+      sku: row.sku,
+      qty: row.qty,
+      weightPct: bySku.get(row.sku)!.weightPct,
+    })));
+    usable.forEach((row, index) => {
+      const share = allocated[index];
+      row.missingWeight = false;
+      row.flags = row.flags.filter((flag) => flag !== "bobot");
+      row.allocatedSub = share.amount;
+      row.unitPrice = row.qty !== 0 ? share.amount / row.qty : 0;
+    });
+  }
+}
 
 export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?: string | null; to?: string | null }): CleanResult {
   const from = range?.from || null;
@@ -237,6 +285,10 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
   const working: Working[] = [];
   let droppedCount = 0;
   const missing = new Set<string>();
+  const weightMode = Boolean(maps.componentWeights?.size);
+  let bundleSeq = 0;
+  let openBundleKey = "";
+  const openBundleSkus = new Set<string>();
   const unmappedChannelKeys = new Map<string, { channel: string; store: string }>();
   const cancelByOrder = new Map<string, DroppedCancel>();
   const keptOrders = new Set<string>();
@@ -269,9 +321,26 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
     const storeRaw = text(row.namaToko);
     const pos = (channelRaw ?? "").trim().toUpperCase() === "SHOPEE" ? false : (channelRaw ?? "").trim().toUpperCase() === "JUBELIO-POS";
     const shopee = (channelRaw ?? "").trim().toUpperCase() === "SHOPEE";
-    const missingWeight = isBundle && (bundleKey == null || !maps.weights.has(bundleKey));
-    const bobot = isBundle ? (bundleKey != null && maps.weights.has(bundleKey) ? maps.weights.get(bundleKey)! : null) : 1;
-    if (missingWeight && bundleKey) missing.add(bundleKey);
+    const componentSku = (bundleRaw ?? "").trim();
+    const parentSku = isBundle && bundleKey ? parentFromBundleKey(bundleKey, componentSku) : null;
+    const defined = parentSku ? maps.componentWeights?.get(parentSku) : undefined;
+    const usePct = Boolean(defined?.length);
+    const missingWeight = isBundle && (usePct ? !defined!.some((part) => part.sku === componentSku) : bundleKey == null || !maps.weights.has(bundleKey));
+    const bobot = isBundle
+      ? (usePct || bundleKey == null || !maps.weights.has(bundleKey) ? null : maps.weights.get(bundleKey)!)
+      : 1;
+    if (!usePct && missingWeight && bundleKey) missing.add(bundleKey);
+    let bundleGroup: number | null = null;
+    if (usePct && isBundle) {
+      const groupKey = `${noPesanan}\0${parentSku ?? ""}`;
+      if (groupKey !== openBundleKey || openBundleSkus.has(componentSku)) {
+        bundleSeq += 1;
+        openBundleKey = groupKey;
+        openBundleSkus.clear();
+      }
+      openBundleSkus.add(componentSku);
+      bundleGroup = bundleSeq;
+    }
 
     const qtyRaw = num(row.qty);
     const unitPrice = bobot == null
@@ -332,8 +401,14 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
       flags,
       pos,
       provinceRawEmpty: !provRaw.trim(),
+      parentSku,
+      parentAmount: isBundle ? (shopee ? num(row.totalPenjualanPerProduk) : num(row.hargaJual) * num(row.qty)) : null,
+      bundleGroup,
+      allocatedSub: null,
     });
   }
+
+  if (weightMode && maps.componentWeights) applyComponentWeights(working, maps.componentWeights, missing);
 
   const byOrder = new Map<string, Working[]>();
   for (const row of working) {
@@ -369,7 +444,7 @@ export function rapikan(rows: RawSalesRow[], maps: RapikanMaps, range?: { from?:
   const groups = new Map<string, Group>();
   for (const row of working) {
     const key = `${row.noPesanan}\u0000${row.sku}`;
-    const sub = row.unitPrice == null ? null : row.qty * row.unitPrice;
+    const sub = row.allocatedSub != null ? row.allocatedSub : row.unitPrice == null ? null : row.qty * row.unitPrice;
     const existing = groups.get(key);
     if (!existing) {
       groups.set(key, { ...row, sub, count: 1, flags: [...row.flags] });

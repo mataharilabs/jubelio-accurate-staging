@@ -11,6 +11,7 @@ import type {
   AccurateTokens,
   AppMeta,
   AppSettings,
+  BundleComponent,
   BundleWeight,
   ChannelMapRow,
   CityMapRow,
@@ -68,6 +69,12 @@ function client(): SupabaseClient {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { fetch: supabaseFetch },
   });
+}
+
+function explainBundle(error: { message?: string; code?: string } | null, action: string): never {
+  const missing = error?.code === "42P01" || error?.code === "PGRST202" || error?.code === "PGRST205" || /bundle_components|ordered_skus|save_bundle_components|does not exist|schema cache/i.test(error?.message ?? "");
+  if (missing) throw new AppError("Jalankan supabase/migrations/0011_product_names_bundle_weights.sql di SQL Editor.");
+  throw new AppError(error?.message || `Gagal ${action}.`);
 }
 
 function explain(error: { message?: string; code?: string } | null, action: string): never {
@@ -902,6 +909,51 @@ export class SupabaseStore implements DataStore {
   async deleteWeight(id: string) {
     const { error } = await this.sb.from("bundle_weights").delete().eq("id", id);
     if (error) explain(error, "menghapus bobot");
+  }
+  async listBundleComponents(): Promise<BundleComponent[]> {
+    const { data, error } = await this.sb.from("bundle_components").select("*").order("bundle_sku").order("position");
+    if (error) explainBundle(error, "membaca komponen paket");
+    return ((data ?? []) as Row[]).map((row) => ({
+      id: str(row.id),
+      bundleSku: str(row.bundle_sku),
+      sku: str(row.component_sku),
+      qty: num(row.qty),
+      weightPct: num(row.weight_pct),
+      position: num(row.position),
+      legacyKey: strOrNull(row.legacy_key),
+      updatedAt: str(row.updated_at),
+      confirmedAt: optionalTime(row, "confirmed_at"),
+    }));
+  }
+  async saveBundle(bundleSku: string, components: { sku: string; qty: number; weightPct: number }[]) {
+    const { error } = await this.sb.rpc("save_bundle_components", { p: { bundleSku: bundleSku.trim(), components } });
+    if (error) explainBundle(error, "menyimpan komponen paket");
+  }
+  async deleteBundle(bundleSku: string) {
+    const sku = bundleSku.trim();
+    const existing = (await this.listBundleComponents()).filter((row) => row.bundleSku === sku);
+    const keys = [sku, ...existing.flatMap((row) => [row.legacyKey, `${sku}-${row.sku}`].filter((key): key is string => Boolean(key)))];
+    const { error } = await this.sb.from("bundle_components").delete().eq("bundle_sku", sku);
+    if (error) explainBundle(error, "menghapus paket");
+    const { error: weights } = await this.sb.from("bundle_weights").delete().in("bundle_key", [...new Set(keys)]);
+    if (weights) explain(weights, "menghapus bobot lama");
+  }
+  async clearBundleComponents() {
+    const { error } = await this.sb.from("bundle_components").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (error) explainBundle(error, "mengosongkan komponen paket");
+  }
+  async listOrderedSkus() {
+    const { data, error } = await this.sb.rpc("ordered_skus");
+    if (error) explainBundle(error, "membaca SKU pesanan");
+    if (!Array.isArray(data)) return [];
+    return data.flatMap((row) => {
+      if (typeof row === "string") return row ? [row] : [];
+      if (row && typeof row === "object" && "sku" in row) {
+        const sku = String((row as { sku?: unknown }).sku ?? "");
+        return sku ? [sku] : [];
+      }
+      return [];
+    });
   }
   async listReviews(): Promise<ReviewItem[]> {
     const data = await must(this.sb.from("review_items").select("*").order("created_at", { ascending: false }), "membaca review");
