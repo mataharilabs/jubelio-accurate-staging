@@ -3,6 +3,7 @@ import type {
   AccurateTokens,
   AppMeta,
   AppSettings,
+  BundleComponent,
   BundleWeight,
   ChannelMapRow,
   CityMapRow,
@@ -71,6 +72,11 @@ export interface DataStore {
   upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean): Promise<number>;
   updateWeight(id: string, patch: { bundleKey?: string; bobot?: number }): Promise<BundleWeight>;
   deleteWeight(id: string): Promise<void>;
+  listBundleComponents(): Promise<BundleComponent[]>;
+  saveBundle(bundleSku: string, components: { sku: string; qty: number; weightPct: number }[]): Promise<void>;
+  deleteBundle(bundleSku: string): Promise<void>;
+  clearBundleComponents(): Promise<void>;
+  listOrderedSkus(): Promise<string[]>;
   listReviews(): Promise<ReviewItem[]>;
   resolveReview(id: string): Promise<void>;
   getSettings(): Promise<AppSettings>;

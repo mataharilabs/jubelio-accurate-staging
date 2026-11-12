@@ -14,6 +14,7 @@ import type {
   AccurateTokens,
   AppMeta,
   AppSettings,
+  BundleComponent,
   BundleWeight,
   ChannelMapRow,
   CityMapRow,
@@ -45,6 +46,7 @@ type LocalDB = {
   syncBatches: SyncBatch[];
   syncItems: SyncBatchItem[];
   weights: BundleWeight[];
+  bundleComponents?: BundleComponent[];
   channels: ChannelMapRow[];
   provinces: ProvinceMapRow[];
   cities: CityMapRow[];
@@ -81,6 +83,7 @@ function load(): LocalDB {
     if (parsed.version !== 2) return emptyDb();
     parsed.settings = sanitizeSettings(parsed.settings);
     parsed.syncLogs = parsed.syncLogs ?? [];
+    parsed.bundleComponents = parsed.bundleComponents ?? [];
     return parsed;
   } catch {
     return emptyDb();
@@ -147,7 +150,15 @@ export class LocalStore implements DataStore {
   }
 
   async dashboard(query: DashboardQuery): Promise<DashboardReport> {
-    return reportOf(this.db.versions, query);
+    let names = new Map<string, string>();
+    try {
+      const { listProducts } = await import("@/lib/products/service");
+      const products = await listProducts({ active: "all" });
+      names = new Map(products.map((row) => [row.sku, row.name]));
+    } catch {
+      names = new Map();
+    }
+    return reportOf(this.db.versions, query, names);
   }
 
   async filterOptions(): Promise<FilterOptions> {
@@ -550,6 +561,51 @@ export class LocalStore implements DataStore {
   async deleteWeight(id: string) {
     this.db.weights = this.db.weights.filter((row) => row.id !== id);
     this.persist();
+  }
+  async listBundleComponents() {
+    return this.db.bundleComponents ?? [];
+  }
+  async saveBundle(bundleSku: string, components: { sku: string; qty: number; weightPct: number }[]) {
+    const sku = bundleSku.trim();
+    if (!sku) throw new AppError("SKU paket wajib diisi.");
+    const now = new Date().toISOString();
+    const next = components.map((row, index) => ({
+      id: crypto.randomUUID(),
+      bundleSku: sku,
+      sku: row.sku.trim(),
+      qty: row.qty,
+      weightPct: row.weightPct,
+      position: index,
+      legacyKey: `${sku}-${row.sku.trim()}`,
+      updatedAt: now,
+      confirmedAt: now,
+    }));
+    const kept = (this.db.bundleComponents ?? []).filter((row) => row.bundleSku !== sku);
+    this.db.bundleComponents = [...kept, ...next];
+    this.persist();
+  }
+  async deleteBundle(bundleSku: string) {
+    const sku = bundleSku.trim();
+    const rows = (this.db.bundleComponents ?? []).filter((row) => row.bundleSku === sku);
+    const keys = new Set<string>([sku]);
+    for (const row of rows) {
+      if (row.legacyKey) keys.add(row.legacyKey);
+      keys.add(`${sku}-${row.sku}`);
+    }
+    this.db.bundleComponents = (this.db.bundleComponents ?? []).filter((row) => row.bundleSku !== sku);
+    this.db.weights = this.db.weights.filter((row) => !keys.has(row.bundleKey));
+    this.persist();
+  }
+  async clearBundleComponents() {
+    this.db.bundleComponents = [];
+    this.persist();
+  }
+  async listOrderedSkus() {
+    const skus = new Set<string>();
+    for (const version of this.db.versions) {
+      for (const line of version.lines) if (line.sku) skus.add(line.sku);
+    }
+    return [...skus];
   }
   async listReviews() { return this.db.reviews; }
   async resolveReview(id: string) {

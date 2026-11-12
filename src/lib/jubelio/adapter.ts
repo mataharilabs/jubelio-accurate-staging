@@ -110,6 +110,17 @@ function wibDate(iso: string | null | undefined): Date | null {
   return new Date(Date.UTC(year, month - 1, date, hour, minute, second));
 }
 
+/** Same location rule for order lines and the product master seeded from those lines. */
+export function itemMatchesLocations(
+  item: { loc_name?: string | null },
+  order: { location_name?: string | null },
+  locations: readonly string[] | null | undefined,
+): boolean {
+  if (!locations) return true;
+  const loc = item.loc_name || order.location_name || "";
+  return locations.includes(loc);
+}
+
 export function orderToRawRows(order: ApiOrder, bundles: Map<number, BundleRecord>, options?: { date?: string | null; locations?: string[] | null }): { rows: RawSalesRow[]; missingBundles: string[] } {
   const tanggal = wibDate(order.transaction_date);
   if (options?.date && wibDay(order.transaction_date) !== options.date) return { rows: [], missingBundles: [] };
@@ -118,7 +129,7 @@ export function orderToRawRows(order: ApiOrder, bundles: Map<number, BundleRecor
   const rows: RawSalesRow[] = [];
   for (const item of order.items ?? []) {
     const loc = item.loc_name || order.location_name || null;
-    if (locations && !locations.includes(loc ?? "")) continue;
+    if (!itemMatchesLocations(item, order, locations)) continue;
     const base: RawSalesRow = {
       tanggal,
       noPesanan: order.salesorder_no,

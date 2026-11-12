@@ -5,6 +5,7 @@ import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { chooseProductName, classifyNameUpdate, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
 import { costForMonth, monthStart, type CostPoint, type CostSource } from "@/lib/products/cost";
+import { matchesProductQuery, type ProductFilter } from "@/lib/products/query";
 
 export type CatalogItem = { id: string; name: string; active: boolean; code?: string; note?: string; updatedAt?: string | null; updatedBy?: string | null };
 export type ProductRow = {
@@ -26,7 +27,7 @@ export type ProductRow = {
   nameSource?: "item" | "line" | null;
   updatedBy?: string | null;
 };
-export type ProductQuery = { q?: string; categoryId?: string; brandId?: string; noHpp?: boolean; notInAccurate?: boolean; incomplete?: boolean; month?: string; confirmed?: "yes" | "no"; active?: "active" | "deleted" | "all" };
+export type ProductQuery = ProductFilter & { month?: string };
 export type HppRun = {
   id: string;
   status: "running" | "done" | "failed";
@@ -217,6 +218,30 @@ export function wibMonth(now = new Date()): string {
   return monthStart(wibDay(now));
 }
 
+async function loadOrderedSkus(): Promise<Set<string>> {
+  if (!supabaseConfigured()) {
+    const { getStore } = await import("@/lib/db");
+    const store = await getStore();
+    return new Set(await store.listOrderedSkus());
+  }
+  const { data, error } = await client().rpc("ordered_skus");
+  if (error) {
+    if (error.code === "PGRST202" || /ordered_skus|schema cache|does not exist/i.test(error.message ?? "")) {
+      throw new AppError("Jalankan supabase/migrations/0011_product_names_bundle_weights.sql di SQL Editor.");
+    }
+    fail(error, "membaca SKU pesanan");
+  }
+  const skus = new Set<string>();
+  for (const row of Array.isArray(data) ? data : []) {
+    if (typeof row === "string" && row) skus.add(row);
+    else if (row && typeof row === "object" && "sku" in row) {
+      const sku = String((row as { sku?: unknown }).sku ?? "");
+      if (sku) skus.add(sku);
+    }
+  }
+  return skus;
+}
+
 export async function listProducts(query: ProductQuery = {}): Promise<ProductRow[]> {
   const month = monthStart(query.month || wibMonth());
   let rows: ProductRow[];
@@ -224,24 +249,17 @@ export async function listProducts(query: ProductQuery = {}): Promise<ProductRow
     const db = readFile();
     rows = db.products.map((row) => withCost({ ...row, hppCarried: false }, db.costs, month));
   } else {
-    const { data, error } = await client().from("products").select("*, categories(name), brands(name), product_costs(unit_cost, source, period_month, fetched_at)").order("sku");
+    let request = client().from("products").select("*, categories(name), brands(name), product_costs(unit_cost, source, period_month, fetched_at)").order("sku");
+    if (query.brandId === "none") request = request.is("brand_id", null);
+    else if (query.brandId) request = request.eq("brand_id", query.brandId);
+    if (query.categoryId === "none") request = request.is("category_id", null);
+    else if (query.categoryId) request = request.eq("category_id", query.categoryId);
+    const { data, error } = await request;
     if (error) fail(error, "membaca produk");
     rows = (data ?? []).map((row) => mapProduct(row as Record<string, unknown>, (row.product_costs ?? []) as { unit_cost?: number; source?: CostSource; period_month?: string; fetched_at?: string }[], month));
   }
-  const q = query.q?.trim().toLowerCase() ?? "";
-  return rows.filter((row) => {
-    if (q && !`${row.sku} ${row.name}`.toLowerCase().includes(q)) return false;
-    if (query.categoryId && row.categoryId !== query.categoryId) return false;
-    if (query.brandId && row.brandId !== query.brandId) return false;
-    if (query.noHpp && row.hpp != null) return false;
-    if (query.confirmed === "no" && row.hpp != null) return false;
-    if (query.confirmed === "yes" && row.hpp == null) return false;
-    if (query.active === "active" && row.active === false) return false;
-    if (query.active === "deleted" && row.active !== false) return false;
-    if (query.notInAccurate && row.accurateFound !== "false") return false;
-    if (query.incomplete && !productIncomplete(row)) return false;
-    return true;
-  });
+  const ordered = query.ordered ? await loadOrderedSkus() : null;
+  return rows.filter((row) => matchesProductQuery(row, query, ordered));
 }
 
 export async function saveProduct(input: { sku: string; name: string; categoryId?: string | null; brandId?: string | null; active?: boolean }, by: string | null): Promise<void> {

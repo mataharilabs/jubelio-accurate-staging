@@ -65,7 +65,13 @@ function selected(list: string[] | undefined, value: string): boolean {
   return !list?.length || list.includes(value);
 }
 
-export function flattenCurrent(versions: OrderVersion[]): Flat[] {
+/** Master name wins. A blank master falls back to the line title. */
+export function salesProductName(masterName: string | null | undefined, lineName: string | null | undefined): string {
+  if (typeof masterName === "string" && masterName !== "") return masterName;
+  return lineName ?? "";
+}
+
+export function flattenCurrent(versions: OrderVersion[], names?: ReadonlyMap<string, string>): Flat[] {
   const rows: Flat[] = [];
   for (const version of versions) {
     if (!version.isCurrent || version.source === "cancel" || version.source === "manual_delete") continue;
@@ -81,7 +87,7 @@ export function flattenCurrent(versions: OrderVersion[]): Flat[] {
         status: version.status,
         kurir: version.kurir,
         sku: line.sku,
-        name: line.productName,
+        name: salesProductName(names?.get(line.sku), line.productName),
         qty: line.qty,
         gross: line.subTotal ?? 0,
         net: (line.revenuePerUnit ?? 0) * line.qty,
@@ -116,14 +122,14 @@ function group(rows: Flat[], key: (row: Flat) => string): Map<string, { gross: n
   const map = new Map<string, { gross: number; net: number; hpp: number; qty: number; orders: Set<string>; name: string; miss: boolean }>();
   for (const row of rows) {
     const id = key(row);
-    const item = map.get(id) ?? { gross: 0, net: 0, hpp: 0, qty: 0, orders: new Set<string>(), name: row.name, miss: false };
+    const item = map.get(id) ?? { gross: 0, net: 0, hpp: 0, qty: 0, orders: new Set<string>(), name: "", miss: false };
     item.gross += row.gross;
     item.net += row.net;
     item.hpp += row.hpp;
     item.qty += row.qty;
     item.miss = item.miss || row.miss;
     item.orders.add(row.no);
-    if (!item.name && row.name) item.name = row.name;
+    if (row.name > item.name) item.name = row.name;
     map.set(id, item);
   }
   return map;
@@ -200,6 +206,6 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
   };
 }
 
-export function reportOf(versions: OrderVersion[], query: DashboardQuery): DashboardReport {
-  return aggregate(filterFlat(flattenCurrent(versions), query), query);
+export function reportOf(versions: OrderVersion[], query: DashboardQuery, names?: ReadonlyMap<string, string>): DashboardReport {
+  return aggregate(filterFlat(flattenCurrent(versions, names), query), query);
 }

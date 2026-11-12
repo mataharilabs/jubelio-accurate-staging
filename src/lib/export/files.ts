@@ -172,7 +172,7 @@ export async function pdfDashboard(report: DashboardReport, subtitle: string, me
   });
   page.drawText("Produk", { x: 430, y: 260, size: 11, font: bold });
   report.products.slice(0, 8).forEach((row, index) => {
-    page.drawText(safe(`${row.sku}   qty ${row.qty}   rev ${Math.round(row.net).toLocaleString("id-ID")}`), {
+    page.drawText(safe(`${row.name || row.sku}   ${row.sku}   qty ${row.qty}   rev ${Math.round(row.net).toLocaleString("id-ID")}`), {
       x: 430, y: 242 - index * 14, size: 9, font,
     });
   });

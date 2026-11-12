@@ -121,6 +121,25 @@ export type BundleWeight = {
   confirmedAt?: string | null;
 };
 
+export type BundleComponent = {
+  id: string;
+  bundleSku: string;
+  sku: string;
+  qty: number;
+  weightPct: number;
+  position: number;
+  legacyKey: string | null;
+  updatedAt: string;
+  confirmedAt?: string | null;
+};
+
+export type BundleDefinition = {
+  bundleSku: string;
+  confirmedAt: string | null;
+  updatedAt: string | null;
+  components: { sku: string; qty: number; weightPct: number }[];
+};
+
 export type ChannelMapRow = {
   id: string;
   channelRaw: string;

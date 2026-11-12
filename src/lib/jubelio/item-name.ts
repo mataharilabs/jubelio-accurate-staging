@@ -1,3 +1,5 @@
+import { itemMatchesLocations } from "@/lib/jubelio/adapter";
+
 /** Pull a display name out of a Jubelio item payload. Callers must not log the payload. */
 export function itemNameFromPayload(body: unknown): string | null {
   const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
@@ -104,12 +106,17 @@ type SeedItem = {
   item_name?: string | null;
   description?: string | null;
   is_bundle?: boolean;
+  loc_name?: string | null;
 };
 
 type SeedBundle = { bundles?: Array<{ item_id?: number | null; item_code?: string | null; item_name?: string | null }> };
 
 /** SKU → item id from the order that is already in memory. Bundle SKUs use the component id. */
-export function productSeedsFromOrders(orders: Array<{ items?: SeedItem[] }>, bundles: Map<number, SeedBundle>): ProductSeed[] {
+export function productSeedsFromOrders(
+  orders: Array<{ location_name?: string | null; items?: SeedItem[] }>,
+  bundles: Map<number, SeedBundle>,
+  options?: { locations?: readonly string[] | null },
+): ProductSeed[] {
   const map = new Map<string, ProductSeed>();
   const put = (sku: string | null | undefined, lineName: string | null | undefined, itemId: number | null | undefined) => {
     const key = sku?.trim() ?? "";
@@ -118,6 +125,7 @@ export function productSeedsFromOrders(orders: Array<{ items?: SeedItem[] }>, bu
   };
   for (const order of orders) {
     for (const item of order.items ?? []) {
+      if (!itemMatchesLocations(item, order, options?.locations)) continue;
       if (item.is_bundle) {
         const components = item.item_id == null ? [] : (bundles.get(item.item_id)?.bundles ?? []);
         if (!components.length) {

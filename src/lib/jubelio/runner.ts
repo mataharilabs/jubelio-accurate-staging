@@ -217,7 +217,7 @@ async function detailChunk(job: PullJob, client: JubelioClient, deadline: number
         const { ensureProducts } = await import("@/lib/products/service");
         const { itemLookup } = await import("@/lib/products/name-sync");
         const { publishNotice: notify } = await import("@/lib/access/store");
-        const created = await ensureProducts(productSeedsFromOrders(orders, known), itemLookup(client, deadline));
+        const created = await ensureProducts(productSeedsFromOrders(orders, known, { locations }), itemLookup(client, deadline));
         if (created.length) await notify({ kind: "product", title: "Produk baru belum lengkap", body: `${created.length} SKU baru ditambahkan tanpa kategori atau brand.`, data: { skus: created.slice(0, 20) } });
       } catch {
         // A missing product table or a Jubelio item lookup must not fail the order import.

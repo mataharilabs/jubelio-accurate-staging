@@ -125,16 +125,27 @@ export function ProductList() {
   const [month, setMonth] = useState("");
   const [refreshAll, setRefreshAll] = useState(false);
   const [dataStatus, setDataStatus] = useState("active");
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+  const [ordered, setOrdered] = useState("");
   const [page, setPage] = useState(0);
   const [canAdd, setCanAdd] = useState(false);
 
-  async function load(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus) {
+  function productParams(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus, nextBrand = brand, nextCategory = category, nextOrdered = ordered) {
     const params = new URLSearchParams({ q: nextQ });
     if (nextMonth) params.set("month", nextMonth);
     if (nextFilter === "noHpp") params.set("noHpp", "1");
     if (nextFilter === "notInAccurate") params.set("notInAccurate", "1");
     if (nextFilter === "incomplete") params.set("incomplete", "1");
     params.set("dataStatus", nextStatus);
+    if (nextBrand) params.set("brand", nextBrand);
+    if (nextCategory) params.set("category", nextCategory);
+    if (nextOrdered) params.set("ordered", nextOrdered);
+    return params;
+  }
+
+  async function load(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus, nextBrand = brand, nextCategory = category, nextOrdered = ordered) {
+    const params = productParams(nextQ, nextFilter, nextMonth, nextStatus, nextBrand, nextCategory, nextOrdered);
     const [products, categoryRows, brandRows, sync] = await Promise.all([
       api<{ rows: Product[]; month: string }>(`/api/products?${params}`),
       api<Catalog[]>("/api/catalog/kategori"),
@@ -148,6 +159,7 @@ export function ProductList() {
     setRun(sync.run);
     setRuns(sync.runs ?? (sync.run ? [sync.run] : []));
     setConfigured(sync.configured);
+    setPage(0);
   }
   useEffect(() => {
     api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
@@ -158,8 +170,9 @@ export function ProductList() {
   }, []);
 
   const missing = rows.filter((row) => row.accurateFound === "false");
-  const pageRows = rows.slice(page * 25, page * 25 + 25);
   const pages = Math.max(1, Math.ceil(rows.length / 25));
+  const safePage = Math.min(page, pages - 1);
+  const pageRows = rows.slice(safePage * 25, safePage * 25 + 25);
 
   return (
     <div>
@@ -183,13 +196,34 @@ export function ProductList() {
               </div>
             </div>
           </div>
-          <div className="f"><label>Status data</label><select value={dataStatus} onChange={(event) => { setDataStatus(event.target.value); setPage(0); load(q, filter, month, event.target.value).catch((error: Error) => setMessage(error.message)); }}><option value="active">Aktif</option><option value="deleted">Dihapus</option><option value="all">Semua</option></select></div>
+          <div className="f"><label>Brand</label>
+            <select value={brand} onChange={(event) => { setBrand(event.target.value); load(q, filter, month, dataStatus, event.target.value, category, ordered).catch((error: Error) => setMessage(error.message)); }}>
+              <option value="">Semua</option>
+              <option value="none">Belum ada brand</option>
+              {brands.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </select>
+          </div>
+          <div className="f"><label>Kategori</label>
+            <select value={category} onChange={(event) => { setCategory(event.target.value); load(q, filter, month, dataStatus, brand, event.target.value, ordered).catch((error: Error) => setMessage(error.message)); }}>
+              <option value="">Semua</option>
+              <option value="none">Belum ada kategori</option>
+              {categories.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </select>
+          </div>
+          <div className="f"><label>Pernah dipesan</label>
+            <select value={ordered} onChange={(event) => { setOrdered(event.target.value); load(q, filter, month, dataStatus, brand, category, event.target.value).catch((error: Error) => setMessage(error.message)); }}>
+              <option value="">Semua</option>
+              <option value="yes">Pernah dipesan</option>
+              <option value="no">Belum pernah dipesan</option>
+            </select>
+          </div>
+          <div className="f"><label>Status data</label><select value={dataStatus} onChange={(event) => { setDataStatus(event.target.value); load(q, filter, month, event.target.value, brand, category, ordered).catch((error: Error) => setMessage(error.message)); }}><option value="active">Aktif</option><option value="deleted">Dihapus</option><option value="all">Semua</option></select></div>
           <div className="f"><label>Bulan HPP</label><input type="month" value={month} onChange={(event) => { setMonth(event.target.value); load(q, filter, event.target.value).catch((error: Error) => setMessage(error.message)); }} /></div>
           <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ run?: HppRun }>("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll }) }).then((result) => { setRun(result.run ?? null); if (result.run?.error && result.run.error !== "Snapshot bulan ini sudah lengkap.") setMessage(result.run.error); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP Accurate</button></div>
           <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ changed?: number; fallback?: number; pending?: number; error?: string | null }>("/api/products/names", { method: "POST" }).then((result) => { setMessage(result.error && result.error !== "Tidak ada nama yang perlu diperbarui." ? result.error : `Nama Jubelio: ${result.changed ?? 0} berubah, ${result.fallback ?? 0} tetap, ${result.pending ?? 0} antre.`); return load(); }).catch((error: Error) => setMessage(error.message))}>Perbarui nama Jubelio</button></div>
           <label className="btn"><input type="checkbox" checked={refreshAll} onChange={(event) => setRefreshAll(event.target.checked)} /> Perbarui semua SKU bulan ini</label>
           <label className="btn">Impor Excel<input hidden type="file" accept=".xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const form = new FormData(); form.set("file", file); fetch("/api/products/import", { method: "POST", body: form }).then(() => load()); }} /></label>
-          <a className="btn" href="/api/products/template">Ekspor mapping</a>
+          <button className="btn" onClick={() => { const params = productParams(); if (picked.length) params.set("skus", picked.join(",")); window.location.href = `/api/products/template?${params.toString()}`; }}>Ekspor {picked.length ? `(${picked.length})` : ""}</button>
         </div>
         {missing.length ? <div className="note mt">Tidak ada di Accurate: {missing.map((row) => row.sku).join(", ")}</div> : null}
         {runs.length ? <div className="note mt">{runs.slice(0, 6).map((item) => <div key={item.id ?? item.startedAt}>{item.startedAt ? new Date(item.startedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"} · {item.status === "done" ? "selesai" : item.status === "failed" ? "gagal" : "berjalan"} · {item.okCount ?? 0} HPP, {item.notFoundCount ?? 0} tidak ada, {item.errorCount ?? 0} gagal{item.months?.length ? ` · ${item.months.join(", ")}` : ""}</div>)}</div> : null}
@@ -217,7 +251,7 @@ export function ProductList() {
           ))}
         </tbody></table>
       </div>
-      <div className="pager">Menampilkan {pageRows.length ? page * 25 + 1 : 0}–{page * 25 + pageRows.length} dari {rows.length} · 25/halaman <button className="btn sm" disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="btn sm" disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></div>
+      <div className="pager">Menampilkan {pageRows.length ? safePage * 25 + 1 : 0}–{safePage * 25 + pageRows.length} dari {rows.length} · 25/halaman <span className="small mut">{picked.length ? `${picked.length} dicentang.` : "Tidak ada centang — ekspor memakai hasil filter."}</span> <button className="btn sm" disabled={!safePage} onClick={() => setPage((value) => value - 1)}>‹</button><button className="btn sm" disabled={safePage >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></div>
       {edit ? (
         <div className="modal-bg on"><div className="modal">
           <h2>{edit.sku ? "Ubah produk" : "Tambah Produk"}</h2>
