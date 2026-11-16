@@ -34,6 +34,7 @@ import type {
   SyncReviewRow,
   SyncState,
 } from "@/lib/db/types";
+import { writeGeoMaps } from "@/lib/db/geo-maps";
 import { accurateConfigured } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 
@@ -528,6 +529,9 @@ export class LocalStore implements DataStore {
     if (index >= 0) this.db.cities[index] = { ...this.db.cities[index], ...next, id: this.db.cities[index].id };
     else this.db.cities.push(next);
     this.persist();
+  }
+  async saveGeoMaps(rows: { provinceRaw: string; cityRaw: string; provinceOfficial: string; cityOfficial: string }[]) {
+    return writeGeoMaps(this, rows);
   }
   async listWeights() { return this.db.weights; }
   async upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean) {
