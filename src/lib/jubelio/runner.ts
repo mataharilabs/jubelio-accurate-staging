@@ -214,10 +214,11 @@ async function detailChunk(job: PullJob, client: JubelioClient, deadline: number
       const imported = await store.importRawLines(cleaned.lines, cleaned.droppedCancels, `jubelio:${job.day}`, job.triggeredBy, { from: job.day, to: job.day }, "api");
       try {
         const { productSeedsFromOrders } = await import("@/lib/jubelio/item-name");
-        const { ensureProducts } = await import("@/lib/products/service");
+        const { ensureProducts, deactivateSupersededProducts } = await import("@/lib/products/service");
         const { itemLookup } = await import("@/lib/products/name-sync");
         const { publishNotice: notify } = await import("@/lib/access/store");
         const created = await ensureProducts(productSeedsFromOrders(orders, known, { locations }), itemLookup(client, deadline));
+        if (imported.newVersions > 0) await deactivateSupersededProducts();
         if (created.length) await notify({ kind: "product", title: "Produk baru belum lengkap", body: `${created.length} SKU baru ditambahkan tanpa kategori atau brand.`, data: { skus: created.slice(0, 20) } });
       } catch {
         // A missing product table or a Jubelio item lookup must not fail the order import.

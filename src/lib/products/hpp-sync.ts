@@ -9,7 +9,7 @@ const CHUNK = 25;
 
 async function queueFor(mode: "cron" | "gaps" | "refresh", now = new Date()): Promise<{ pending: string[]; months: string[] }> {
   const today = wibDay(now);
-  const products = await listProducts();
+  const products = (await listProducts()).filter((row) => row.active);
   const covered = await listCostCoverage();
   const work = syncWork(today, products.map((row) => ({ sku: row.sku, accurateFound: row.accurateFound })), covered, mode);
   const months = [...new Set(work.map((row) => row.periodMonth))];
