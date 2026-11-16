@@ -14,8 +14,32 @@ export type GeoPair = {
   citySuggestion: string;
 };
 
-function pairKey(province: string, city: string): string {
+export function geoPairKey(province: string, city: string): string {
   return `${foldRegion(province)}\u0000${foldRegion(city)}`;
+}
+
+export type GeoRecommendation = {
+  provinceRaw: string;
+  cityRaw: string;
+  provinceOfficial: string;
+  cityOfficial: string;
+};
+
+/** A pending row whose province and city can be filled from the app's suggestion. */
+export function recommendationOf(row: Pick<GeoPair, "pending" | "provinceRaw" | "cityRaw" | "provinceOfficial" | "cityOfficial" | "provinceSuggestion" | "citySuggestion">): GeoRecommendation | null {
+  if (!row.pending) return null;
+  const provinceRaw = row.provinceRaw.trim();
+  const cityRaw = row.cityRaw.trim();
+  if (!provinceRaw) return null;
+  const provinceSuggestion = row.provinceSuggestion.trim();
+  const citySuggestion = row.citySuggestion.trim();
+  const suggested = Boolean(provinceSuggestion || (cityRaw && citySuggestion));
+  if (!suggested) return null;
+  const provinceOfficial = row.provinceOfficial.trim() || provinceSuggestion;
+  const cityOfficial = cityRaw ? (row.cityOfficial.trim() || citySuggestion) : "";
+  if (!provinceOfficial) return null;
+  if (cityRaw && !cityOfficial) return null;
+  return { provinceRaw, cityRaw, provinceOfficial, cityOfficial };
 }
 
 function later(left?: string | null, right?: string | null): string | null {
@@ -42,7 +66,7 @@ export function buildGeoPairs(input: {
     const provinceName = provinceRaw.trim();
     const cityName = cityRaw.trim();
     if (!provinceName && !cityName) return;
-    const key = pairKey(provinceName, cityName);
+    const key = geoPairKey(provinceName, cityName);
     if (pairs.has(key)) return;
     const province = provinceName ? provinceFor(provinceName) : undefined;
     const city = cityName ? cityFor(provinceName, cityName) : undefined;

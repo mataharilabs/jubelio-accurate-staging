@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api-client";
 import { splitWeights, weightTotalError } from "@/lib/domain/bundle-weight";
 import { isBundlePending, isMappingPending } from "@/lib/domain/phase3";
 import type { AppSettings, BundleDefinition, ChannelMapRow, CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
-import { type GeoPair } from "@/lib/region/pairs";
+import { recommendationOf, type GeoPair } from "@/lib/region/pairs";
 import { citiesInProvince, OFFICIAL_CITIES, OFFICIAL_PROVINCES, suggestCity, suggestProvince, type NameSuggestion } from "@/lib/region/names";
 
 type AccurateInfo = {
@@ -30,57 +30,212 @@ function regionLabel(row: ReviewItem): string {
   return row.rawKey;
 }
 
+type GeoDraft = { provinceOfficial: string; cityOfficial: string };
+type GeoFailure = { key: string; label: string; error: string };
+type GeoBulkResult = { saved: number; savedKeys: string[]; failed: GeoFailure[] };
+
+function SelectAllBox({ checked, indeterminate, disabled, onChange, label }: { checked: boolean; indeterminate: boolean; disabled?: boolean; onChange: () => void; label: string }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return <input ref={ref} type="checkbox" checked={checked} disabled={disabled} aria-label={label} onChange={onChange} />;
+}
+
 function GeoMapping() {
   const [rows, setRows] = useState<GeoPair[]>([]);
   const [pending, setPending] = useState(0);
   const [mapFilter, setMapFilter] = useState<"belum" | "sudah" | "semua">("belum");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
-  const [edits, setEdits] = useState<Record<string, { provinceOfficial: string; cityOfficial: string }>>({});
+  const [edits, setEdits] = useState<Record<string, GeoDraft>>({});
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ provinceRaw: "", cityRaw: "", provinceOfficial: "", cityOfficial: "" });
   const [message, setMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [failures, setFailures] = useState<GeoFailure[]>([]);
+  const [saving, setSaving] = useState(false);
 
-  async function load() {
+  async function refresh() {
     const result = await api<{ rows: GeoPair[]; pending: number }>("/api/mappings/geo");
     setRows(result.rows);
     setPending(result.pending);
-    setEdits({});
-    setPage(0);
     setMapFilter((current) => current === "belum" && result.pending === 0 ? "semua" : current);
   }
-  useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, []);
+  useEffect(() => { refresh().catch((error: Error) => setMessage(error.message)); }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+  useEffect(() => {
+    if (!Object.keys(edits).length) return;
+    const onLeave = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, [edits]);
 
   const filtered = rows.filter((row) => {
     if (mapFilter === "belum" && !row.pending) return false;
     if (mapFilter === "sudah" && row.pending) return false;
-    const hay = `${row.provinceRaw} ${row.cityRaw} ${row.provinceOfficial} ${row.cityOfficial}`.toLowerCase();
+    const hay = `${row.provinceRaw} ${row.cityRaw} ${row.provinceOfficial} ${row.cityOfficial} ${row.provinceSuggestion} ${row.citySuggestion}`.toLowerCase();
     return !q.trim() || hay.includes(q.trim().toLowerCase());
   });
   const pageSize = 25;
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const shown = filtered.slice(page * pageSize, page * pageSize + pageSize);
+  const safePage = Math.min(page, pages - 1);
+  const shown = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
   const dateText = (value?: string | null) => value ? new Date(value).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—";
-  const valueOf = (row: GeoPair) => edits[row.key] ?? { provinceOfficial: row.provinceOfficial, cityOfficial: row.cityOfficial };
+  const draftOf = (row: GeoPair): GeoDraft => edits[row.key] ?? {
+    provinceOfficial: row.provinceOfficial || row.provinceSuggestion,
+    cityOfficial: row.cityRaw ? (row.cityOfficial || row.citySuggestion) : "",
+  };
+  const payloadOf = (row: GeoPair) => {
+    const value = draftOf(row);
+    return {
+      provinceRaw: row.provinceRaw,
+      cityRaw: row.cityRaw,
+      provinceOfficial: value.provinceOfficial.trim(),
+      cityOfficial: row.cityRaw ? value.cityOfficial.trim() : "",
+    };
+  };
+  const dirtyCount = Object.keys(edits).length;
+  const pageKeys = shown.map((row) => row.key);
+  const selectedOnPage = pageKeys.filter((key) => checked.has(key)).length;
+  const allPageChecked = pageKeys.length > 0 && selectedOnPage === pageKeys.length;
+  const somePageChecked = selectedOnPage > 0 && !allPageChecked;
 
-  async function save(row: { provinceRaw: string; cityRaw: string; provinceOfficial: string; cityOfficial: string }) {
-    await api("/api/mappings/geo", { method: "POST", body: JSON.stringify(row) });
-    setMessage("Mapping provinsi dan kota disimpan.");
-    setAdding(false);
-    setDraft({ provinceRaw: "", cityRaw: "", provinceOfficial: "", cityOfficial: "" });
-    await load();
+  function toggleAll() {
+    setChecked((current) => {
+      const next = new Set(current);
+      const keys = shown.map((row) => row.key);
+      if (keys.length > 0 && keys.every((key) => next.has(key))) {
+        for (const key of keys) next.delete(key);
+      } else {
+        for (const key of keys) next.add(key);
+      }
+      return next;
+    });
+  }
+
+  function toggleRow(key: string) {
+    setChecked((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function changeOfficial(row: GeoPair, field: keyof GeoDraft, next: string) {
+    const value = draftOf(row);
+    setEdits((current) => ({ ...current, [row.key]: { ...value, [field]: next } }));
+    setChecked((current) => {
+      if (current.has(row.key)) return current;
+      const copy = new Set(current);
+      copy.add(row.key);
+      return copy;
+    });
+  }
+
+  function dropSaved(keys: string[]) {
+    const saved = new Set(keys);
+    setEdits((current) => {
+      const next: Record<string, GeoDraft> = {};
+      for (const [key, value] of Object.entries(current)) if (!saved.has(key)) next[key] = value;
+      return next;
+    });
+    setChecked((current) => {
+      const next = new Set(current);
+      for (const key of keys) next.delete(key);
+      return next;
+    });
+  }
+
+  async function saveChecked() {
+    const items = rows.filter((row) => checked.has(row.key)).map(payloadOf);
+    if (!items.length || saving) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await api<GeoBulkResult>("/api/mappings/geo", { method: "POST", body: JSON.stringify({ items }) });
+      setFailures(result.failed);
+      setToast(result.saved
+        ? result.failed.length
+          ? `${result.saved} mapping disimpan. ${result.failed.length} baris gagal.`
+          : `${result.saved} mapping disimpan.`
+        : "Tidak ada mapping yang disimpan.");
+      const savedKeys = new Set(result.savedKeys);
+      const failedKeys = new Set(result.failed.map((row) => row.key));
+      setEdits((current) => {
+        const next: Record<string, GeoDraft> = {};
+        for (const [key, value] of Object.entries(current)) if (!savedKeys.has(key)) next[key] = value;
+        return next;
+      });
+      setChecked((current) => {
+        const next = new Set<string>();
+        for (const key of current) if (!savedKeys.has(key)) next.add(key);
+        for (const key of failedKeys) next.add(key);
+        return next;
+      });
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Gagal menyimpan.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function approve(row: GeoPair) {
+    if (saving) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api("/api/mappings/geo", { method: "POST", body: JSON.stringify(payloadOf(row)) });
+      setToast("1 mapping disetujui.");
+      setFailures((current) => current.filter((item) => item.key !== row.key));
+      await refresh();
+      dropSaved([row.key]);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Gagal menyimpan.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveManual() {
+    if (saving) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api("/api/mappings/geo", { method: "POST", body: JSON.stringify(draft) });
+      setAdding(false);
+      setDraft({ provinceRaw: "", cityRaw: "", provinceOfficial: "", cityOfficial: "" });
+      setToast("Mapping wilayah disimpan.");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Gagal menyimpan.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div>
       <div className="pagehead">
-        <div className="desc">Satu baris untuk setiap kombinasi provinsi dan kota dari Jubelio. Tanggal mapping kosong = belum termapping.</div>
+        <div className="desc">Satu baris untuk setiap kombinasi provinsi dan kota dari Jubelio. Centang baris lalu Simpan untuk menyimpan sekaligus. Setujui hanya muncul bila ada rekomendasi yang belum dikonfirmasi.</div>
         <div className="actions">
           <button className="btn pri" onClick={() => setAdding(true)}>Tambah</button>
         </div>
       </div>
       {pending ? <div className="pendbar"><b>{pending}</b> wilayah baru perlu di-mapping.</div> : <div className="note" style={{ marginBottom: 12 }}>Semua provinsi dan kota sudah termapping.</div>}
+      {dirtyCount ? <div className="note" style={{ marginBottom: 12 }}>Ada {dirtyCount} baris yang diubah dan belum disimpan. Mengganti filter atau halaman tidak menghapus perubahan itu.</div> : null}
       {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
+      {failures.length ? <div className="warnbox" style={{ marginBottom: 12 }}><b>{failures.length} baris gagal disimpan dan tetap dicentang.</b><ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{failures.map((row) => <li key={row.key}>{row.label}: {row.error}</li>)}</ul></div> : null}
       <div className="filterbar">
         <div className="f grow"><label>Cari</label><input value={q} placeholder="Provinsi atau kota…" onChange={(event) => { setQ(event.target.value); setPage(0); }} /></div>
         <div className="f"><label>Status mapping</label>
@@ -91,39 +246,54 @@ function GeoMapping() {
           </select>
         </div>
       </div>
-      <div className="tablecard"><div className="tscroll"><table className="cards small">
-        <thead><tr><th>Provinsi (Jubelio)</th><th>Provinsi standar</th><th>Kota (Jubelio)</th><th>Kota standar</th><th>Tanggal mapping</th><th>Status</th><th></th></tr></thead>
+      <div className="tablecard">
+        <div className="th3">
+          <button className="btn pri" disabled={checked.size === 0 || saving} onClick={() => { saveChecked().catch((error: Error) => setMessage(error.message)); }}>Simpan ({checked.size})</button>
+          <label className="only-mobile" style={{ alignItems: "center", gap: 6 }}>
+            <SelectAllBox checked={allPageChecked} indeterminate={somePageChecked} disabled={!shown.length || saving} onChange={toggleAll} label="Pilih semua baris di halaman ini" />
+            Pilih semua
+          </label>
+          <span className="small mut">{checked.size ? "Simpan menulis semua baris yang dicentang, termasuk yang ada di halaman lain." : "Centang baris yang akan disimpan."}</span>
+        </div>
+        <div className="tscroll"><table className="cards small">
+        <thead><tr>
+          <th className="nowrap"><SelectAllBox checked={allPageChecked} indeterminate={somePageChecked} disabled={!shown.length || saving} onChange={toggleAll} label="Pilih semua baris di halaman ini" /></th>
+          <th>Provinsi (Jubelio)</th><th>Provinsi standar</th><th>Kota (Jubelio)</th><th>Kota standar</th><th>Tanggal mapping</th><th>Status</th><th>Aksi</th>
+        </tr></thead>
         <tbody>
           {shown.map((row, index) => {
-            const value = valueOf(row);
+            const value = draftOf(row);
             const cityOptions = value.provinceOfficial ? citiesInProvince(value.provinceOfficial) : OFFICIAL_CITIES.map((city) => city.name);
             const listId = `kota-geo-${index}`;
+            const recommendation = recommendationOf(row);
             return (
               <tr key={row.key}>
+                <td data-label="Pilih"><input type="checkbox" checked={checked.has(row.key)} disabled={saving} aria-label={`Pilih ${row.provinceRaw} ${row.cityRaw}`.trim()} onChange={() => toggleRow(row.key)} /></td>
                 <td data-label="Provinsi (Jubelio)"><span className="mono">{row.provinceRaw || "—"}</span></td>
                 <td data-label="Provinsi standar">
-                  <input list="provinsi-resmi" value={value.provinceOfficial} placeholder={row.provinceSuggestion || "Pilih"} onChange={(event) => setEdits((current) => ({ ...current, [row.key]: { ...value, provinceOfficial: event.target.value } }))} />
+                  <input list="provinsi-resmi" value={value.provinceOfficial} placeholder={row.provinceSuggestion || "Pilih"} onChange={(event) => changeOfficial(row, "provinceOfficial", event.target.value)} />
                   {row.pending && row.provinceSuggestion && value.provinceOfficial !== row.provinceSuggestion ? <div className="small mut">Saran: {row.provinceSuggestion}</div> : null}
                 </td>
                 <td data-label="Kota (Jubelio)"><span className="mono">{row.cityRaw || "—"}</span></td>
                 <td data-label="Kota standar">
-                  <input list={listId} value={value.cityOfficial} placeholder={row.citySuggestion || "Pilih"} disabled={!row.cityRaw} onChange={(event) => setEdits((current) => ({ ...current, [row.key]: { ...value, cityOfficial: event.target.value } }))} />
+                  <input list={listId} value={value.cityOfficial} placeholder={row.citySuggestion || "Pilih"} disabled={!row.cityRaw} onChange={(event) => changeOfficial(row, "cityOfficial", event.target.value)} />
                   <datalist id={listId}>{cityOptions.map((name) => <option key={name} value={name} />)}</datalist>
                   {row.pending && row.citySuggestion && value.cityOfficial !== row.citySuggestion ? <div className="small mut">Saran: {row.citySuggestion}</div> : null}
                 </td>
                 <td data-label="Tanggal mapping">{row.pending ? <span className="pill p-warn">Belum termapping</span> : dateText(row.mappedAt)}</td>
                 <td data-label="Status">{row.pending ? <span className="pill p-warn">Belum</span> : <span className="pill p-ok">Sudah</span>}</td>
-                <td className="nowrap">
-                  <button className="btn sm" onClick={() => save({ provinceRaw: row.provinceRaw, cityRaw: row.cityRaw, provinceOfficial: value.provinceOfficial || row.provinceSuggestion, cityOfficial: row.cityRaw ? (value.cityOfficial || row.citySuggestion) : "" }).catch((error: Error) => setMessage(error.message))}>{row.pending ? "Setujui" : "Simpan"}</button>
+                <td className="nowrap" data-label="Aksi">
+                  {recommendation ? <button className="btn sm" disabled={saving} onClick={() => { approve(row).catch((error: Error) => setMessage(error.message)); }}>Setujui</button> : null}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table></div>
-      <div className="pager"><span>Menampilkan {shown.length ? page * pageSize + 1 : 0}–{page * pageSize + shown.length} dari {filtered.length} · 25/halaman</span><span className="pg"><button disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="on">{page + 1}</button><button disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></span></div>
+      <div className="pager"><span>Menampilkan {shown.length ? safePage * pageSize + 1 : 0}–{safePage * pageSize + shown.length} dari {filtered.length} · 25/halaman</span><span className="pg"><button disabled={!safePage} onClick={() => setPage(safePage - 1)}>‹</button><button className="on">{safePage + 1}</button><button disabled={safePage >= pages - 1} onClick={() => setPage(safePage + 1)}>›</button></span></div>
       </div>
       <datalist id="provinsi-resmi">{OFFICIAL_PROVINCES.map((name) => <option key={name} value={name} />)}</datalist>
+      {toast ? <div className="toast" role="status">{toast}</div> : null}
       {adding ? <div className="modal-bg on"><div className="modal">
         <h2>Tambah mapping wilayah</h2>
         <div className="small mut">Satu kombinasi provinsi dan kota dari Jubelio.</div>
@@ -136,7 +306,7 @@ function GeoMapping() {
         <datalist id="kota-resmi-baru">{(draft.provinceOfficial ? citiesInProvince(draft.provinceOfficial) : OFFICIAL_CITIES.map((city) => city.name)).map((name) => <option key={name} value={name} />)}</datalist>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn" onClick={() => setAdding(false)}>Batal</button>
-          <button className="btn pri" onClick={() => save(draft).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+          <button className="btn pri" disabled={saving} onClick={() => { saveManual().catch((error: Error) => setMessage(error.message)); }}>Simpan</button>
         </div>
       </div></div> : null}
     </div>

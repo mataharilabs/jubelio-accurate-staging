@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CityMapRow, ProvinceMapRow, ReviewItem } from "@/lib/db/types";
-import { buildGeoPairs, countPendingGeo } from "@/lib/region/pairs";
+import { buildGeoPairs, countPendingGeo, recommendationOf } from "@/lib/region/pairs";
 
 function province(patch: Partial<ProvinceMapRow>): ProvinceMapRow {
   return { id: "p", raw: "JAWA TIMUR", official: "Jawa Timur", needsReview: false, mappedAt: "2026-10-01T00:00:00.000Z", ...patch };
@@ -76,5 +76,38 @@ describe("combined province and city rows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].cityRaw).toBe("BEKASI");
     expect(countPendingGeo(rows)).toBe(1);
+  });
+});
+
+describe("Setujui recommendation", () => {
+  const pending = {
+    pending: true,
+    provinceRaw: "JATIM",
+    cityRaw: "SBY",
+    provinceOfficial: "",
+    cityOfficial: "",
+    provinceSuggestion: "Jawa Timur",
+    citySuggestion: "Kota Surabaya",
+  };
+
+  it("returns the suggested province and city only while the row is still pending", () => {
+    expect(recommendationOf(pending)).toEqual({
+      provinceRaw: "JATIM",
+      cityRaw: "SBY",
+      provinceOfficial: "Jawa Timur",
+      cityOfficial: "Kota Surabaya",
+    });
+    expect(recommendationOf({ ...pending, pending: false })).toBeNull();
+  });
+
+  it("hides Setujui when the app has no suggestion that can complete the row", () => {
+    expect(recommendationOf({ ...pending, provinceSuggestion: "", citySuggestion: "" })).toBeNull();
+    expect(recommendationOf({ ...pending, citySuggestion: "" })).toBeNull();
+    expect(recommendationOf({ ...pending, cityRaw: "", citySuggestion: "", provinceSuggestion: "Jawa Timur" })).toEqual({
+      provinceRaw: "JATIM",
+      cityRaw: "",
+      provinceOfficial: "Jawa Timur",
+      cityOfficial: "",
+    });
   });
 });

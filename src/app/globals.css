@@ -159,8 +159,9 @@ tr.sel td { background: #f5f6ff; }
   .g6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .g3, .g32, .g2, .detail { grid-template-columns: 1fr; }
 }
+.only-mobile { display: none; }
 @media (max-width: 860px) {
-  .menu-btn, .filter-toggle { display: inline-flex; }
+  .menu-btn, .filter-toggle, .only-mobile { display: inline-flex; }
   .main { margin-left: 0; }
   aside.nav { position: fixed; transform: translateX(-105%); transition: transform .2s ease; overflow-y: auto; }
   aside.nav.open { transform: none; }
@@ -221,5 +222,6 @@ nav a { font-size: 13px; padding: 7px 18px; }
 .rules { margin: 8px 0 0; padding-left: 18px; }
 .rules li { margin: 4px 0; }
 .btn.danger { color: var(--bad); border-color: #f3c4c4; }
+.toast { position: fixed; right: 18px; bottom: 18px; z-index: 70; background: #141a2e; color: #fff; border-radius: 10px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(20, 26, 46, .25); max-width: min(420px, calc(100vw - 36px)); font-size: 13px; }
 tr.deleted td { color: #9aa1b2; }
 @media (max-width: 1100px) { .g5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } .choice { grid-template-columns: 1fr; } }

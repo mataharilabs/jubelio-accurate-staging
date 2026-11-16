@@ -33,6 +33,7 @@ import type {
   SyncState,
   VersionSource,
 } from "@/lib/db/types";
+import { writeGeoMaps } from "@/lib/db/geo-maps";
 import { commitWithRollback, eachPage, pickLatestRows, supabaseFetch, type RollbackStep } from "@/lib/db/supabase-paging";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { accurateConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
@@ -881,6 +882,9 @@ export class SupabaseStore implements DataStore {
       : this.sb.from("city_map").upsert(payload, { onConflict: "province_raw,city_raw" });
     const { error } = await query;
     if (error) explain(error, "menyimpan mapping kota");
+  }
+  async saveGeoMaps(rows: { provinceRaw: string; cityRaw: string; provinceOfficial: string; cityOfficial: string }[]) {
+    return writeGeoMaps(this, rows);
   }
   async listWeights(): Promise<BundleWeight[]> {
     const data = await must(this.sb.from("bundle_weights").select("*").order("bundle_key"), "membaca bobot");

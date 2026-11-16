@@ -1,4 +1,5 @@
 import type { CleanLine } from "@/lib/cleanup/rapikan";
+import type { GeoMapInput, GeoMapWriteResult } from "@/lib/db/geo-maps";
 import type {
   AccurateTokens,
   AppMeta,
@@ -68,6 +69,7 @@ export interface DataStore {
   saveProvinceMap(row: Omit<ProvinceMapRow, "id"> & { id?: string }): Promise<void>;
   listCityMaps(): Promise<CityMapRow[]>;
   saveCityMap(row: Omit<CityMapRow, "id"> & { id?: string }): Promise<void>;
+  saveGeoMaps(rows: GeoMapInput[]): Promise<GeoMapWriteResult>;
   listWeights(): Promise<BundleWeight[]>;
   upsertWeights(rows: { bundleKey: string; bobot: number }[], replace: boolean): Promise<number>;
   updateWeight(id: string, patch: { bundleKey?: string; bobot?: number }): Promise<BundleWeight>;
