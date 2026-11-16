@@ -4,8 +4,10 @@ import path from "node:path";
 import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { chooseProductName, classifyNameUpdate, mayReplaceName, type ItemIdentity, type ProductSeed } from "@/lib/jubelio/item-name";
+import { eachPage } from "@/lib/db/supabase-paging";
 import { costForMonth, monthStart, type CostPoint, type CostSource } from "@/lib/products/cost";
 import { matchesProductQuery, type ProductFilter } from "@/lib/products/query";
+import { bundleProtectedSkus, supersededSkus } from "@/lib/products/superseded";
 
 export type CatalogItem = { id: string; name: string; active: boolean; code?: string; note?: string; updatedAt?: string | null; updatedBy?: string | null };
 export type ProductRow = {
@@ -25,6 +27,8 @@ export type ProductRow = {
   firstSoldAt: string | null;
   jubelioItemId?: number | null;
   nameSource?: "item" | "line" | null;
+  createdBy?: string | null;
+  updatedAt?: string | null;
   updatedBy?: string | null;
 };
 export type ProductQuery = ProductFilter & { month?: string };
@@ -48,6 +52,8 @@ export type HppRun = {
 
 type FileDb = { categories: CatalogItem[]; brands: CatalogItem[]; products: ProductRow[]; costs: CostPoint[]; runs: HppRun[] };
 const FILE = path.join(process.cwd(), "data", "products.json");
+const STORE_FILE = path.join(process.cwd(), "data", "store-v2.json");
+const SUPERSEDED_BY = "auto:superseded-sku";
 
 function client(): SupabaseClient {
   return createClient(supabaseUrl(), supabaseServiceKey(), { auth: { persistSession: false, autoRefreshToken: false } });
@@ -284,6 +290,8 @@ export async function saveProduct(input: { sku: string; name: string; categoryId
       firstSoldAt: existing?.firstSoldAt ?? null,
       jubelioItemId: existing?.jubelioItemId ?? null,
       nameSource: existing?.nameSource ?? null,
+      createdBy: existing?.createdBy ?? null,
+      updatedAt: existing?.updatedAt ?? null,
       updatedBy: by,
     };
     db.products = existing ? db.products.map((row) => row.sku === sku ? next : row) : [...db.products, next];
@@ -359,10 +367,25 @@ export async function ensureProducts(lines: ProductSeed[], lookup?: ItemLookup):
   return created;
 }
 
+/** `active: true` only on insert. An existing row, including a soft-deleted SKU, keeps its flag. */
+export function namedProductPayload(input: { sku: string; name: string; itemId: number | null; source: "item" | "line"; at: string }, existing: boolean): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    sku: input.sku,
+    name: input.name,
+    jubelio_item_id: input.itemId,
+    name_source: input.source,
+    updated_by: "jubelio",
+    updated_at: input.at,
+  };
+  if (!existing) payload.active = true;
+  return payload;
+}
+
 export async function saveNamedProduct(input: { sku: string; name: string; itemId: number | null; source: "item" | "line" }): Promise<void> {
   const sku = input.sku.trim();
   if (!sku) return;
   const name = input.name.trim() || sku;
+  const at = new Date().toISOString();
   if (!supabaseConfigured()) {
     const db = readFile();
     const existing = db.products.find((row) => row.sku === sku);
@@ -382,33 +405,197 @@ export async function saveNamedProduct(input: { sku: string; name: string; itemI
       firstSoldAt: existing?.firstSoldAt ?? null,
       jubelioItemId: input.itemId,
       nameSource: input.source,
+      createdBy: existing?.createdBy ?? null,
+      updatedAt: at,
       updatedBy: "jubelio",
     };
     db.products = existing ? db.products.map((row) => row.sku === sku ? next : row) : [...db.products, next];
     writeFile(db);
     return;
   }
-  const payload = {
-    sku,
-    name,
-    active: true,
-    jubelio_item_id: input.itemId,
-    name_source: input.source,
-    updated_by: "jubelio",
-    updated_at: new Date().toISOString(),
-  };
+  const found = await client().from("products").select("sku").eq("sku", sku).maybeSingle();
+  if (found.error) fail(found.error, "membaca produk");
+  const payload = namedProductPayload({ sku, name, itemId: input.itemId, source: input.source, at }, Boolean(found.data));
   const wrote = await client().from("products").upsert(payload);
   if (!wrote.error) return;
   if (!/name_source|schema cache/i.test(wrote.error.message ?? "")) fail(wrote.error, "menyimpan nama produk");
-  const retry = await client().from("products").upsert({
+  const retryBody: Record<string, unknown> = {
     sku: payload.sku,
     name: payload.name,
-    active: payload.active,
     jubelio_item_id: payload.jubelio_item_id,
     updated_by: payload.updated_by,
     updated_at: payload.updated_at,
-  });
+  };
+  if ("active" in payload) retryBody.active = payload.active;
+  const retry = await client().from("products").upsert(retryBody);
   if (retry.error) fail(retry.error, "menyimpan nama produk");
+}
+
+type SkuFact = { sku: string; createdBy: string | null; active: boolean; accurateFound: string | null };
+
+function accurateValue(value: unknown): string | null {
+  if (value == null) return null;
+  return String(value);
+}
+
+/** Current versions include data_status deleted. Only an explicit is_current false is historical. */
+function skuUsage(lines: { sku: string; current: boolean | null }[]): { historical: Set<string>; current: Set<string> } {
+  const historical = new Set<string>();
+  const current = new Set<string>();
+  for (const line of lines) {
+    const sku = line.sku.trim();
+    if (!sku || line.current == null) continue;
+    (line.current ? current : historical).add(sku);
+  }
+  return { historical, current };
+}
+
+function readLocalOrderFacts(): {
+  lines: { sku: string; current: boolean | null }[];
+  components: { bundleSku: string; componentSku: string }[];
+  bundleKeys: string[];
+} {
+  try {
+    const parsed = JSON.parse(readFileSync(STORE_FILE, "utf8")) as {
+      version?: number;
+      versions?: { isCurrent?: boolean; lines?: { sku?: string }[] }[];
+      weights?: { bundleKey?: string }[];
+      bundleComponents?: { bundleSku?: string; sku?: string }[];
+    };
+    if (parsed.version !== 2) return { lines: [], components: [], bundleKeys: [] };
+    const lines: { sku: string; current: boolean | null }[] = [];
+    for (const version of parsed.versions ?? []) {
+      const current = version.isCurrent === true ? true : version.isCurrent === false ? false : null;
+      for (const line of version.lines ?? []) lines.push({ sku: String(line.sku ?? ""), current });
+    }
+    return {
+      lines,
+      components: (parsed.bundleComponents ?? []).map((row) => ({ bundleSku: String(row.bundleSku ?? ""), componentSku: String(row.sku ?? "") })),
+      bundleKeys: (parsed.weights ?? []).map((row) => String(row.bundleKey ?? "")),
+    };
+  } catch {
+    return { lines: [], components: [], bundleKeys: [] };
+  }
+}
+
+async function pageQuery<T>(
+  action: string,
+  load: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message?: string; code?: string } | null }>,
+): Promise<T[]> {
+  return eachPage(async (from, to) => {
+    const { data, error } = await load(from, to);
+    if (error) fail(error, action);
+    return data ?? [];
+  });
+}
+
+/**
+ * Soft-delete auto-created products whose SKU remains only on non-current order versions.
+ * A later Jubelio version replaced that SKU. Never-ordered, current (including deleted),
+ * costed, Accurate-matched, and bundle SKUs stay. Does not hard-delete or edit orders.
+ */
+export async function deactivateSupersededProducts(): Promise<string[]> {
+  const now = new Date().toISOString();
+  if (!supabaseConfigured()) {
+    const db = readFile();
+    const facts = readLocalOrderFacts();
+    const usage = skuUsage(facts.lines);
+    const products: SkuFact[] = db.products.map((row) => ({
+      sku: row.sku,
+      createdBy: row.createdBy ?? null,
+      active: row.active,
+      accurateFound: row.accurateFound ?? null,
+    }));
+    const protectedSkus = bundleProtectedSkus(products.map((row) => row.sku), facts.components, facts.bundleKeys);
+    const chosen = supersededSkus({
+      products,
+      costSkus: new Set(db.costs.map((row) => row.sku)),
+      protectedSkus,
+      historicalSkus: usage.historical,
+      currentSkus: usage.current,
+    });
+    if (!chosen.length) return [];
+    const drop = new Set(chosen);
+    for (const product of db.products) {
+      if (!drop.has(product.sku)) continue;
+      product.active = false;
+      product.updatedBy = SUPERSEDED_BY;
+      product.updatedAt = now;
+    }
+    writeFile(db);
+    return chosen.sort((a, b) => a.localeCompare(b, "en"));
+  }
+
+  const sb = client();
+  const productRows = await pageQuery("membaca produk", (from, to) => sb.from("products").select("sku, created_by, active, accurate_found").eq("active", true).is("created_by", null).order("sku").range(from, to));
+  const products: SkuFact[] = productRows.map((row) => ({
+    sku: String(row.sku ?? ""),
+    createdBy: row.created_by == null ? null : String(row.created_by),
+    active: row.active !== false,
+    accurateFound: accurateValue(row.accurate_found),
+  })).filter((row) => row.sku);
+  if (!products.length) return [];
+
+  const costRows = await pageQuery("membaca HPP", (from, to) => sb.from("product_costs").select("sku").order("id").range(from, to));
+  const componentRows = await pageQuery("membaca komponen bundle", async (from, to) => {
+    const result = await sb.from("bundle_components").select("bundle_sku, component_sku").order("id").range(from, to);
+    const text = result.error?.message ?? "";
+    if (result.error && /bundle_components/i.test(text) && /does not exist|schema cache|PGRST/i.test(text)) {
+      throw new AppError("Jalankan supabase/migrations/0011_product_names_bundle_weights.sql di SQL Editor.");
+    }
+    return result;
+  });
+  const weightRows = await pageQuery("membaca bobot bundle", (from, to) => sb.from("bundle_weights").select("bundle_key").order("id").range(from, to));
+  const protectedSkus = bundleProtectedSkus(
+    products.map((row) => row.sku),
+    componentRows.map((row) => ({ bundleSku: String(row.bundle_sku ?? ""), componentSku: String(row.component_sku ?? "") })),
+    weightRows.map((row) => String(row.bundle_key ?? "")),
+  );
+  const costSkus = new Set(costRows.map((row) => String(row.sku ?? "").trim()).filter(Boolean));
+  const preliminary = products.filter((row) => !costSkus.has(row.sku) && !protectedSkus.has(row.sku) && (row.accurateFound == null || row.accurateFound === "false" || row.accurateFound === "unknown"));
+  const usage = skuUsage(await orderLineUsage(sb, preliminary.map((row) => row.sku)));
+  const chosen = supersededSkus({
+    products: preliminary,
+    costSkus,
+    protectedSkus,
+    historicalSkus: usage.historical,
+    currentSkus: usage.current,
+  });
+  if (!chosen.length) return [];
+
+  const updated: string[] = [];
+  for (let i = 0; i < chosen.length; i += 100) {
+    const chunk = chosen.slice(i, i + 100);
+    const { data, error } = await sb.from("products").update({
+      active: false,
+      updated_by: SUPERSEDED_BY,
+      updated_at: now,
+    }).in("sku", chunk).eq("active", true).is("created_by", null).select("sku");
+    if (error) fail(error, "menonaktifkan SKU tergantikan");
+    for (const row of data ?? []) {
+      const sku = String(row.sku ?? "").trim();
+      if (sku) updated.push(sku);
+    }
+  }
+  return updated.sort((a, b) => a.localeCompare(b, "en"));
+}
+
+async function orderLineUsage(sb: SupabaseClient, skus: string[]): Promise<{ sku: string; current: boolean | null }[]> {
+  const wanted = [...new Set(skus.map((sku) => sku.trim()).filter(Boolean))];
+  if (!wanted.length) return [];
+  const currentIds = new Set((await pageQuery("membaca versi pesanan", (from, to) => sb.from("order_versions").select("id").eq("is_current", true).order("id").range(from, to))).map((row) => String(row.id)));
+  const historicalIds = new Set((await pageQuery("membaca versi pesanan", (from, to) => sb.from("order_versions").select("id").eq("is_current", false).order("id").range(from, to))).map((row) => String(row.id)));
+  const lines: { sku: string; current: boolean | null }[] = [];
+  for (let i = 0; i < wanted.length; i += 40) {
+    const chunk = wanted.slice(i, i + 40);
+    const rows = await pageQuery("membaca baris pesanan", (from, to) => sb.from("order_lines").select("sku, version_id").in("sku", chunk).order("id").range(from, to));
+    for (const row of rows) {
+      const versionId = String(row.version_id ?? "");
+      const current = currentIds.has(versionId) ? true : historicalIds.has(versionId) ? false : null;
+      lines.push({ sku: String(row.sku ?? ""), current });
+    }
+  }
+  return lines;
 }
 
 export type NameTarget = { sku: string; name: string; updatedBy: string | null; jubelioItemId: number | null; nameSource: "item" | "line" | null };
@@ -416,15 +603,16 @@ export type NameTarget = { sku: string; name: string; updatedBy: string | null; 
 export async function listNameTargets(): Promise<NameTarget[]> {
   if (!supabaseConfigured()) {
     return readFile().products
-      .filter((row) => mayReplaceName(row.updatedBy) && (row.nameSource == null || (row.nameSource === "line" && row.jubelioItemId == null)))
+      .filter((row) => row.active !== false && mayReplaceName(row.updatedBy) && (row.nameSource == null || (row.nameSource === "line" && row.jubelioItemId == null)))
       .map((row) => ({ sku: row.sku, name: row.name, updatedBy: row.updatedBy ?? null, jubelioItemId: row.jubelioItemId ?? null, nameSource: row.nameSource ?? null }));
   }
-  const { data, error } = await client().from("products").select("sku, name, updated_by, jubelio_item_id, name_source").order("sku");
+  const { data, error } = await client().from("products").select("sku, name, updated_by, jubelio_item_id, name_source, active").order("sku");
   if (error) {
     if (/name_source|schema cache/i.test(error.message ?? "")) throw new AppError("Jalankan supabase/migrations/0007_product_names.sql di SQL Editor.");
     fail(error, "membaca nama produk");
   }
   return (data ?? []).flatMap((row) => {
+    if (row.active === false) return [];
     const updatedBy = row.updated_by ? String(row.updated_by) : null;
     const nameSource = row.name_source === "item" || row.name_source === "line" ? row.name_source : null;
     const needsLookup = nameSource == null || (nameSource === "line" && row.jubelio_item_id == null);
