@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api-client";
+import { ActionButton, reported, reportedOk, Spinner, TableShell } from "@/components/ui/feedback";
+import { Pager, useClientPage } from "@/components/ui/pager";
+import { api, track } from "@/lib/api-client";
 import { canMaintainMaster } from "@/lib/auth/permissions";
 import { numId, rp } from "@/lib/format";
 
@@ -39,6 +41,28 @@ function productHpp(row: Product): string {
   return `${rp(row.hpp)} · ${source}${row.hppCarried ? " · HPP bulan sebelumnya" : ""}`;
 }
 
+function RankCard({ title, tableKey, rows }: { title: string; tableKey: string; rows: Rank[] }) {
+  const page = useClientPage(rows, tableKey, 10);
+  const max = Math.max(1, ...page.shown.map((row) => Number(row.net) || 0));
+  return (
+    <div className="card">
+      <h3>{title}</h3>
+      <table className="small cards mt"><thead><tr><th>Nama</th><th>Qty</th><th>Revenue bersih</th><th>HPP</th><th>Laba kotor</th></tr></thead><tbody>
+        {page.shown.map((row) => (
+          <tr key={`${tableKey}-${row.sku ?? row.name}`}>
+            <td data-label="Nama">{row.name}{row.sku ? <div className="mut">{row.sku}</div> : null}<div style={{ height: 6, background: "var(--line)", marginTop: 4 }}><div style={{ width: `${Math.max(4, ((Number(row.net) || 0) / max) * 100)}%`, height: 6, background: "var(--accent, #4f46e5)" }} /></div></td>
+            <td data-label="Qty" className="n">{numId(row.qty)}</td>
+            <td data-label="Revenue" className="n">{rp(row.net)}</td>
+            <td data-label="HPP" className="n">{hppText(row)}</td>
+            <td data-label="Laba" className="n">{gp(row)}</td>
+          </tr>
+        ))}
+      </tbody></table>
+      <Pager page={page.page} pageSize={page.pageSize} total={page.total} shown={page.shown.length} onPage={page.setPage} onPageSize={page.setPageSize} />
+    </div>
+  );
+}
+
 export function ProductDashboard() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -46,11 +70,16 @@ export function ProductDashboard() {
   const [open, setOpen] = useState(false);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [all, setAll] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function load(nextFrom = from, nextTo = to, nextStatus = status) {
-    const result = await api<Report>("/api/products/report", { method: "POST", body: JSON.stringify({ from: nextFrom || null, to: nextTo || null, statuses: nextStatus ? [nextStatus] : [] }) });
-    setReport(result);
+    setLoading(true);
+    try {
+      const result = await api<Report>("/api/products/report", { method: "POST", body: JSON.stringify({ from: nextFrom || null, to: nextTo || null, statuses: nextStatus ? [nextStatus] : [] }) });
+      setReport(result);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load().catch((err: Error) => setError(err.message)); 
     // Mount-only load.
@@ -75,33 +104,13 @@ export function ProductDashboard() {
               </div>
             </div>
           </div>
-          <div className="f"><label>&nbsp;</label><button className="btn sm" onClick={() => { if (!report) return; import("xlsx").then((XLSX) => { const rows = RANKS.flatMap((rank) => ((report[rank.key] as Rank[]) ?? []).map((row) => ({ Peringkat: rank.title, Nama: row.name, SKU: row.sku ?? "", Qty: row.qty, "Revenue bersih": row.net, HPP: row.hpp ?? "", "Laba kotor": row.profit ?? "" }))); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), "Produk"); XLSX.writeFile(book, "produk.xlsx"); }).catch((err: Error) => setError(err.message)); }}>Excel</button></div>
+          <div className="f"><label>&nbsp;</label><ActionButton className="btn sm" onClick={() => { if (!report) return; return import("xlsx").then((XLSX) => { const rows = RANKS.flatMap((rank) => ((report[rank.key] as Rank[]) ?? []).map((row) => ({ Peringkat: rank.title, Nama: row.name, SKU: row.sku ?? "", Qty: row.qty, "Revenue bersih": row.net, HPP: row.hpp ?? "", "Laba kotor": row.profit ?? "" }))); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), "Produk"); XLSX.writeFile(book, "produk.xlsx"); reportedOk("Excel diunduh."); }).catch((err: Error) => setError(reported(err, "Ekspor gagal."))); }}>Excel</ActionButton></div>
         </div>
         <div className="note mt">Cakupan HPP {report ? `${report.coverage.percent}% (${report.coverage.withHpp}/${report.coverage.skus} SKU)` : "…"}. RETURNED ikut terhitung. Batal tidak ikut, kecuali dipilih di filter. Laba memakai HPP bulan penjualan. Jika bulan itu belum ada, dipakai HPP bulan sebelumnya.</div>
       </div>
-      <div className="grid g2 mt">
-        {RANKS.map((rank) => {
-          const rows = (report?.[rank.key] as Rank[] | undefined) ?? [];
-          const shown = all ? rows : rows.slice(0, 10);
-          const max = Math.max(1, ...shown.map((row) => Number(row.net) || 0));
-          return (
-            <div className="card" key={rank.key}>
-              <h3>{rank.title}</h3>
-              <button className="btn sm" onClick={() => setAll((value) => !value)}>{all ? "Top 10" : "Lihat semua"}</button>
-              <table className="small cards mt"><thead><tr><th>Nama</th><th>Qty</th><th>Revenue bersih</th><th>HPP</th><th>Laba kotor</th></tr></thead><tbody>
-                {shown.map((row) => (
-                  <tr key={`${rank.key}-${row.sku ?? row.name}`}>
-                    <td data-label="Nama">{row.name}{row.sku ? <div className="mut">{row.sku}</div> : null}<div style={{ height: 6, background: "var(--line)", marginTop: 4 }}><div style={{ width: `${Math.max(4, ((Number(row.net) || 0) / max) * 100)}%`, height: 6, background: "var(--accent, #4f46e5)" }} /></div></td>
-                    <td data-label="Qty" className="n">{numId(row.qty)}</td>
-                    <td data-label="Revenue" className="n">{rp(row.net)}</td>
-                    <td data-label="HPP" className="n">{hppText(row)}</td>
-                    <td data-label="Laba" className="n">{gp(row)}</td>
-                  </tr>
-                ))}
-              </tbody></table>
-            </div>
-          );
-        })}
+      <div className="grid g2 mt" style={{ position: "relative" }}>
+        {loading ? <div className="table-loading" role="status"><Spinner /> Memuat…</div> : null}
+        {RANKS.map((rank) => <RankCard key={rank.key} title={rank.title} tableKey={`produk-${rank.key}`} rows={(report?.[rank.key] as Rank[] | undefined) ?? []} />)}
       </div>
     </div>
   );
@@ -128,7 +137,7 @@ export function ProductList() {
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
   const [ordered, setOrdered] = useState("");
-  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [canAdd, setCanAdd] = useState(false);
 
   function productParams(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus, nextBrand = brand, nextCategory = category, nextOrdered = ordered) {
@@ -145,6 +154,8 @@ export function ProductList() {
   }
 
   async function load(nextQ = q, nextFilter = filter, nextMonth = month, nextStatus = dataStatus, nextBrand = brand, nextCategory = category, nextOrdered = ordered) {
+    setLoading(true);
+    try {
     const params = productParams(nextQ, nextFilter, nextMonth, nextStatus, nextBrand, nextCategory, nextOrdered);
     const [products, categoryRows, brandRows, sync] = await Promise.all([
       api<{ rows: Product[]; month: string }>(`/api/products?${params}`),
@@ -153,13 +164,16 @@ export function ProductList() {
       api<{ run: HppRun | null; runs?: HppRun[]; configured: boolean }>("/api/products/sync"),
     ]);
     setRows(products.rows);
+    productPage.setPage(0);
     if (!nextMonth && products.month) setMonth(products.month.slice(0, 7));
     setCategories(categoryRows);
     setBrands(brandRows);
     setRun(sync.run);
     setRuns(sync.runs ?? (sync.run ? [sync.run] : []));
     setConfigured(sync.configured);
-    setPage(0);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => {
     api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
@@ -170,9 +184,8 @@ export function ProductList() {
   }, []);
 
   const missing = rows.filter((row) => row.accurateFound === "false");
-  const pages = Math.max(1, Math.ceil(rows.length / 25));
-  const safePage = Math.min(page, pages - 1);
-  const pageRows = rows.slice(safePage * 25, safePage * 25 + 25);
+  const productPage = useClientPage(rows, "products", 25);
+  const pageRows = productPage.shown;
 
   return (
     <div>
@@ -219,10 +232,10 @@ export function ProductList() {
           </div>
           <div className="f"><label>Status data</label><select value={dataStatus} onChange={(event) => { setDataStatus(event.target.value); load(q, filter, month, event.target.value, brand, category, ordered).catch((error: Error) => setMessage(error.message)); }}><option value="active">Aktif</option><option value="deleted">Dihapus</option><option value="all">Semua</option></select></div>
           <div className="f"><label>Bulan HPP</label><input type="month" value={month} onChange={(event) => { setMonth(event.target.value); load(q, filter, event.target.value).catch((error: Error) => setMessage(error.message)); }} /></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ run?: HppRun }>("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll }) }).then((result) => { setRun(result.run ?? null); if (result.run?.error && result.run.error !== "Snapshot bulan ini sudah lengkap.") setMessage(result.run.error); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP Accurate</button></div>
-          <div className="f"><label>&nbsp;</label><button className="btn" onClick={() => api<{ changed?: number; fallback?: number; pending?: number; error?: string | null }>("/api/products/names", { method: "POST" }).then((result) => { setMessage(result.error && result.error !== "Tidak ada nama yang perlu diperbarui." ? result.error : `Nama Jubelio: ${result.changed ?? 0} berubah, ${result.fallback ?? 0} tetap, ${result.pending ?? 0} antre.`); return load(); }).catch((error: Error) => setMessage(error.message))}>Perbarui nama Jubelio</button></div>
+          <div className="f"><label>&nbsp;</label><ActionButton className="btn" onClick={() => api<{ run?: HppRun }>("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll }) }).then((result) => { setRun(result.run ?? null); if (result.run?.error && result.run.error !== "Snapshot bulan ini sudah lengkap.") setMessage(reported(new Error(result.run.error))); else setMessage(reportedOk("Sync HPP selesai.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Sync HPP gagal.")))}>Sync HPP Accurate</ActionButton></div>
+          <div className="f"><label>&nbsp;</label><ActionButton className="btn" onClick={() => api<{ changed?: number; fallback?: number; pending?: number; error?: string | null }>("/api/products/names", { method: "POST" }).then((result) => { const text = result.error && result.error !== "Tidak ada nama yang perlu diperbarui." ? result.error : `Nama Jubelio: ${result.changed ?? 0} berubah, ${result.fallback ?? 0} tetap, ${result.pending ?? 0} antre.`; setMessage(result.error && result.error !== "Tidak ada nama yang perlu diperbarui." ? reported(new Error(text)) : reportedOk(text)); return load(); }).catch((error: Error) => setMessage(reported(error, "Gagal memperbarui nama.")))}>Perbarui nama Jubelio</ActionButton></div>
           <label className="btn"><input type="checkbox" checked={refreshAll} onChange={(event) => setRefreshAll(event.target.checked)} /> Perbarui semua SKU bulan ini</label>
-          <label className="btn">Impor Excel<input hidden type="file" accept=".xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const form = new FormData(); form.set("file", file); fetch("/api/products/import", { method: "POST", body: form }).then(() => load()); }} /></label>
+          <label className="btn">Impor Excel<input hidden type="file" accept=".xlsx" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; const form = new FormData(); form.set("file", file); track(fetch("/api/products/import", { method: "POST", body: form })).then(async (response) => { if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error || "Impor gagal."); } setMessage(reportedOk("Impor produk selesai.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Impor gagal."))); }} /></label>
           <button className="btn" onClick={() => { const params = productParams(); if (picked.length) params.set("skus", picked.join(",")); window.location.href = `/api/products/template?${params.toString()}`; }}>Ekspor {picked.length ? `(${picked.length})` : ""}</button>
         </div>
         {missing.length ? <div className="note mt">Tidak ada di Accurate: {missing.map((row) => row.sku).join(", ")}</div> : null}
@@ -232,10 +245,10 @@ export function ProductList() {
         <div className="card mt filters">
           <select value={bulkCategory} onChange={(event) => setBulkCategory(event.target.value)}><option value="">Kategori</option>{categories.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
           <select value={bulkBrand} onChange={(event) => setBulkBrand(event.target.value)}><option value="">Brand</option>{brands.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
-          <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ skus: picked, categoryId: bulkCategory || undefined, brandId: bulkBrand || undefined }) }).then(() => { setPicked([]); return load(); })}>Terapkan ke {picked.length} SKU</button>
+          <ActionButton className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ skus: picked, categoryId: bulkCategory || undefined, brandId: bulkBrand || undefined }) }).then(() => { setPicked([]); setMessage(reportedOk("Brand dan kategori diterapkan.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Gagal menerapkan.")))}>Terapkan ke {picked.length} SKU</ActionButton>
         </div>
       ) : null}
-      <div className="card mt" style={{ overflow: "auto" }}>
+      <TableShell loading={loading} className="card mt">
         <table className="cards small"><thead><tr><th></th><th>SKU</th><th>Nama</th><th>Kategori</th><th>Brand</th><th>HPP</th><th>Accurate</th><th></th></tr></thead><tbody>
           {pageRows.map((row) => (
             <tr key={row.sku}>
@@ -250,8 +263,9 @@ export function ProductList() {
             </tr>
           ))}
         </tbody></table>
-      </div>
-      <div className="pager">Menampilkan {pageRows.length ? safePage * 25 + 1 : 0}–{safePage * 25 + pageRows.length} dari {rows.length} · 25/halaman <span className="small mut">{picked.length ? `${picked.length} dicentang.` : "Tidak ada centang — ekspor memakai hasil filter."}</span> <button className="btn sm" disabled={!safePage} onClick={() => setPage((value) => value - 1)}>‹</button><button className="btn sm" disabled={safePage >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></div>
+      <Pager page={productPage.page} pageSize={productPage.pageSize} total={productPage.total} shown={pageRows.length} onPage={productPage.setPage} onPageSize={productPage.setPageSize} />
+      <div className="small mut" style={{ padding: "0 12px 10px" }}>{picked.length ? `${picked.length} dicentang.` : "Tidak ada centang — ekspor memakai hasil filter."}</div>
+      </TableShell>
       {edit ? (
         <div className="modal-bg on"><div className="modal">
           <h2>{edit.sku ? "Ubah produk" : "Tambah Produk"}</h2>
@@ -264,7 +278,7 @@ export function ProductList() {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
             <button className="btn" onClick={() => setEdit(null)}>Batal</button>
-            <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, periodMonth: month ? `${month}-01` : undefined, unitCost: edit.unitCost === "" || edit.unitCost == null ? undefined : Number(edit.unitCost) }) }).then(() => { setEdit(null); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+            <ActionButton className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, periodMonth: month ? `${month}-01` : undefined, unitCost: edit.unitCost === "" || edit.unitCost == null ? undefined : Number(edit.unitCost) }) }).then(() => { setEdit(null); setMessage(reportedOk("Produk disimpan.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Gagal menyimpan produk.")))}>Simpan</ActionButton>
           </div>
         </div></div>
       ) : null}
@@ -279,7 +293,7 @@ export function HppMaster() {
   const [q, setQ] = useState("");
   const [confirmed, setConfirmed] = useState<"no" | "yes" | "">("no");
   const [month, setMonth] = useState("");
-  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [edit, setEdit] = useState<Product | null>(null);
   const [unitCost, setUnitCost] = useState("");
@@ -289,13 +303,17 @@ export function HppMaster() {
   const [skuChoices, setSkuChoices] = useState<Product[]>([]);
 
   async function load(nextConfirmed = confirmed, nextMonth = month, nextQ = q) {
-    const params = new URLSearchParams({ q: nextQ, dataStatus: "active" });
-    if (nextMonth) params.set("month", nextMonth);
-    if (nextConfirmed) params.set("confirmed", nextConfirmed);
-    const result = await api<{ rows: Product[]; month: string }>(`/api/products?${params}`);
-    setRows(result.rows);
-    if (!nextMonth && result.month) setMonth(result.month.slice(0, 7));
-    setPage(0);
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ q: nextQ, dataStatus: "active" });
+      if (nextMonth) params.set("month", nextMonth);
+      if (nextConfirmed) params.set("confirmed", nextConfirmed);
+      const result = await api<{ rows: Product[]; month: string }>(`/api/products?${params}`);
+      setRows(result.rows);
+      if (!nextMonth && result.month) setMonth(result.month.slice(0, 7));
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => {
     api<{ permissions?: string[] }>("/api/auth/me").then((me) => {
@@ -312,9 +330,8 @@ export function HppMaster() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const pageSize = 25;
-  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
-  const shown = rows.slice(page * pageSize, page * pageSize + pageSize);
+  const hppPage = useClientPage(rows, "hpp", 25);
+  const shown = hppPage.shown;
   const pending = rows.filter((row) => row.hpp == null).length;
 
   return (
@@ -323,7 +340,7 @@ export function HppMaster() {
         <div className="desc">Nilai di tabel adalah DPP dari Accurate. Dashboard memakai HPP inkl. PPN = DPP × 1,11. SKU tanpa HPP bernilai 0 dan tanggal updated kosong.</div>
         <div className="actions">
           {canEdit ? <button className="btn pri" onClick={() => { setAddOpen(true); setAddSku(""); setAddCost(""); api<{ rows: Product[] }>("/api/products?dataStatus=active").then((result) => setSkuChoices(result.rows)).catch((error: Error) => setMessage(error.message)); }}>Tambah</button> : null}
-          {canSync ? <button className="btn" onClick={() => api("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll: true }) }).then(() => { setMessage("Sync HPP bulan ini dijalankan."); return load(); }).catch((error: Error) => setMessage(error.message))}>Sync HPP bulan ini</button> : <span className="small mut">Sync HPP hanya untuk Super Admin dan Admin.</span>}
+          {canSync ? <ActionButton className="btn" onClick={() => api("/api/products/sync", { method: "POST", body: JSON.stringify({ refreshAll: true }) }).then(() => { setMessage(reportedOk("Sync HPP bulan ini dijalankan.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Sync HPP gagal.")))}>Sync HPP bulan ini</ActionButton> : <span className="small mut">Sync HPP hanya untuk Super Admin dan Admin.</span>}
         </div>
       </div>
       {pending && confirmed !== "yes" ? <div className="pendbar"><b>{pending}</b> SKU belum dikonfirmasi pada saringan ini.</div> : null}
@@ -339,7 +356,7 @@ export function HppMaster() {
         </div>
         <div className="f"><label>Bulan</label><input type="month" value={month} onChange={(event) => { setMonth(event.target.value); load(confirmed, event.target.value).catch((error: Error) => setMessage(error.message)); }} /></div>
       </div>
-      <div className="tablecard"><div className="tscroll"><table>
+      <TableShell loading={loading}><div className="tscroll"><table>
         <thead><tr><th>SKU</th><th>Nama</th><th className="n">DPP</th><th className="n">HPP inkl. PPN</th><th>Sumber</th><th>Tgl Updated</th><th>Status</th><th></th></tr></thead>
         <tbody>{shown.map((row) => (
           <tr key={row.sku}>
@@ -354,8 +371,8 @@ export function HppMaster() {
           </tr>
         ))}</tbody>
       </table></div>
-      <div className="pager"><span>Menampilkan {shown.length ? page * pageSize + 1 : 0}–{page * pageSize + shown.length} dari {rows.length} · 25/halaman</span><span className="pg"><button disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button><button className="on">{page + 1}</button><button disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button></span></div>
-      </div>
+      <Pager page={hppPage.page} pageSize={hppPage.pageSize} total={hppPage.total} shown={shown.length} onPage={hppPage.setPage} onPageSize={hppPage.setPageSize} />
+      </TableShell>
       {addOpen ? <div className="modal-bg on"><div className="modal">
         <h2>Tambah HPP</h2>
         <div className="note">SKU harus sudah ada di Master Produk. Nilai yang diisi adalah DPP. Dashboard memakai DPP × 1,11. Menyimpan mengisi Tgl Updated (sumber Manual). Sync Accurate berikutnya menimpa nilai ini bila SKU ditemukan.</div>
@@ -367,7 +384,7 @@ export function HppMaster() {
         <div className="f mt"><label>Nilai DPP (Rp)</label><input type="number" value={addCost} onChange={(event) => setAddCost(event.target.value)} /></div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn" onClick={() => setAddOpen(false)}>Batal</button>
-          <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ hppOnly: true, sku: addSku, unitCost: Number(addCost), periodMonth: month ? `${month}-01` : undefined, note: "HPP manual" }) }).then(() => { setAddOpen(false); setMessage("HPP manual disimpan. Tgl Updated terisi."); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+          <ActionButton className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ hppOnly: true, sku: addSku, unitCost: Number(addCost), periodMonth: month ? `${month}-01` : undefined, note: "HPP manual" }) }).then(() => { setAddOpen(false); setMessage(reportedOk("HPP manual disimpan. Tgl Updated terisi.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Gagal menyimpan HPP.")))}>Simpan</ActionButton>
         </div>
       </div></div> : null}
       {edit ? <div className="modal-bg on"><div className="modal">
@@ -376,7 +393,7 @@ export function HppMaster() {
         <div className="f mt"><label>Nilai DPP</label><input type="number" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} /></div>
         <div className="foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn" onClick={() => setEdit(null)}>Batal</button>
-          <button className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, unitCost: Number(unitCost), periodMonth: month ? `${month}-01` : undefined }) }).then(() => { setEdit(null); return load(); }).catch((error: Error) => setMessage(error.message))}>Simpan</button>
+          <ActionButton className="btn pri" onClick={() => api("/api/products", { method: "POST", body: JSON.stringify({ sku: edit.sku, name: edit.name, categoryId: edit.categoryId, brandId: edit.brandId, unitCost: Number(unitCost), periodMonth: month ? `${month}-01` : undefined }) }).then(() => { setEdit(null); setMessage(reportedOk("HPP disimpan.")); return load(); }).catch((error: Error) => setMessage(reported(error, "Gagal menyimpan HPP.")))}>Simpan</ActionButton>
         </div>
       </div></div> : null}
     </div>
@@ -392,10 +409,18 @@ export function CatalogEditor({ kind, title }: { kind: "kategori" | "merek"; tit
   const [open, setOpen] = useState(false);
   const [canAdd, setCanAdd] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [dataStatus, setDataStatus] = useState<"active" | "deleted">("active");
   const [replaceId, setReplaceId] = useState("");
   const [removing, setRemoving] = useState<Catalog | null>(null);
-  async function load() { setRows(await api<Catalog[]>(`/api/catalog/${kind}`)); }
+  async function load() {
+    setLoading(true);
+    try {
+      setRows(await api<Catalog[]>(`/api/catalog/${kind}`));
+    } finally {
+      setLoading(false);
+    }
+  }
   useEffect(() => {
     api<{ role?: string; permissions?: string[] }>("/api/auth/me").then((me) => {
       setCanAdd(canMaintainMaster(me.role ?? "", me.permissions ?? [], "products.manage"));
@@ -407,6 +432,7 @@ export function CatalogEditor({ kind, title }: { kind: "kategori" | "merek"; tit
     const hay = `${row.name} ${row.code ?? ""} ${row.note ?? ""}`.toLowerCase();
     return !q.trim() || hay.includes(q.trim().toLowerCase());
   });
+  const catalogPage = useClientPage(visible, `catalog-${kind}`, 25);
   return (
     <div>
       <div className="pagehead">
@@ -415,23 +441,25 @@ export function CatalogEditor({ kind, title }: { kind: "kategori" | "merek"; tit
       </div>
       {error ? <div className="warnbox">{error}</div> : null}
       <div className="filterbar">
-        <div className="f grow"><label>Cari</label><input value={q} placeholder={`Nama ${title.toLowerCase()}`} onChange={(event) => setQ(event.target.value)} /></div>
+        <div className="f grow"><label>Cari</label><input value={q} placeholder={`Nama ${title.toLowerCase()}`} onChange={(event) => { setQ(event.target.value); catalogPage.setPage(0); }} /></div>
         <div className="f"><label>Status data</label>
           <select value={dataStatus} onChange={(event) => setDataStatus(event.target.value as "active" | "deleted")}><option value="active">Aktif</option><option value="deleted">Dihapus</option></select>
         </div>
       </div>
-      <div className="tablecard"><table><thead><tr><th>Nama</th>{kind === "merek" ? <th>Kode</th> : <th>Keterangan</th>}<th>Status data</th><th>Diperbarui</th><th></th></tr></thead><tbody>
-        {visible.map((row) => <tr key={row.id} className={row.active ? "" : "deleted"}><td>{row.name}</td><td>{kind === "merek" ? (row.code || "—") : (row.note || "—")}</td><td>{row.active ? <span className="pill p-ok">Aktif</span> : <span className="pill p-bad">Dihapus</span>}</td><td>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"}{row.updatedBy ? <div className="small mut">{row.updatedBy}</div> : null}</td><td>
-          {row.active ? <button className="btn sm danger" onClick={() => { setRemoving(row); setReplaceId(""); }}>Hapus</button> : <button className="btn sm" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ id: row.id, name: row.name, active: true }) }).then(load)}>Pulihkan</button>}
+      <TableShell loading={loading}><table><thead><tr><th>Nama</th>{kind === "merek" ? <th>Kode</th> : <th>Keterangan</th>}<th>Status data</th><th>Diperbarui</th><th></th></tr></thead><tbody>
+        {catalogPage.shown.map((row) => <tr key={row.id} className={row.active ? "" : "deleted"}><td>{row.name}</td><td>{kind === "merek" ? (row.code || "—") : (row.note || "—")}</td><td>{row.active ? <span className="pill p-ok">Aktif</span> : <span className="pill p-bad">Dihapus</span>}</td><td>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" }) : "—"}{row.updatedBy ? <div className="small mut">{row.updatedBy}</div> : null}</td><td>
+          {row.active ? <button className="btn sm danger" onClick={() => { setRemoving(row); setReplaceId(""); }}>Hapus</button> : <ActionButton className="btn sm" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ id: row.id, name: row.name, active: true }) }).then(() => { setError(null); reportedOk("Data dipulihkan."); return load(); }).catch((err: Error) => setError(reported(err, "Gagal memulihkan.")))}>Pulihkan</ActionButton>}
         </td></tr>)}
-      </tbody></table></div>
+      </tbody></table>
+      <Pager page={catalogPage.page} pageSize={catalogPage.pageSize} total={catalogPage.total} shown={catalogPage.shown.length} onPage={catalogPage.setPage} onPageSize={catalogPage.setPageSize} />
+      </TableShell>
       {open ? <div className="modal-bg on"><div className="modal">
         <h2>Tambah {title}</h2>
         <div className="f mt"><label>Nama {title.toLowerCase()}</label><input value={name} onChange={(event) => setName(event.target.value)} /></div>
         {kind === "merek" ? <div className="f mt"><label>Kode</label><input value={code} onChange={(event) => setCode(event.target.value)} /></div> : <div className="f mt"><label>Keterangan</label><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn" onClick={() => setOpen(false)}>Batal</button>
-          <button className="btn pri" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ name, code, note }) }).then(() => { setOpen(false); return load(); }).catch((err: Error) => setError(err.message))}>Simpan</button>
+          <ActionButton className="btn pri" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ name, code, note }) }).then(() => { setOpen(false); reportedOk(`${title} disimpan.`); return load(); }).catch((err: Error) => setError(reported(err, "Gagal menyimpan.")))}>Simpan</ActionButton>
         </div>
       </div></div> : null}
       {removing ? <div className="modal-bg on"><div className="modal">
@@ -442,7 +470,7 @@ export function CatalogEditor({ kind, title }: { kind: "kategori" | "merek"; tit
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button className="btn" onClick={() => setRemoving(null)}>Batal</button>
-          <button className="btn danger" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ id: removing.id, name: removing.name, active: false, replacementId: replaceId || null }) }).then(() => { setRemoving(null); return load(); }).catch((err: Error) => setError(err.message))}>Ya, hapus</button>
+          <ActionButton className="btn danger" onClick={() => api(`/api/catalog/${kind}`, { method: "POST", body: JSON.stringify({ id: removing.id, name: removing.name, active: false, replacementId: replaceId || null }) }).then(() => { setRemoving(null); reportedOk(`${title} dihapus.`); return load(); }).catch((err: Error) => setError(reported(err, "Gagal menghapus.")))}>Ya, hapus</ActionButton>
         </div>
       </div></div> : null}
     </div>

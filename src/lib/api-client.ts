@@ -1,4 +1,27 @@
+let inflight = 0;
+const inflightListeners = new Set<(count: number) => void>();
+
+function setInflight(next: number) {
+  inflight = Math.max(0, next);
+  for (const listener of inflightListeners) listener(inflight);
+}
+
+export function subscribeInflight(listener: (count: number) => void): () => void {
+  inflightListeners.add(listener);
+  listener(inflight);
+  return () => inflightListeners.delete(listener);
+}
+
+export function track<T>(work: Promise<T>): Promise<T> {
+  setInflight(inflight + 1);
+  return work.finally(() => setInflight(inflight - 1));
+}
+
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  return track(request<T>(url, init));
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (typeof init?.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");

@@ -11,6 +11,7 @@ import { reportOf } from "@/lib/domain/aggregate";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
 import type {
+  AccurateCustomerCache,
   AccurateTokens,
   AppMeta,
   AppSettings,
@@ -55,6 +56,7 @@ type LocalDB = {
   settings: AppSettings;
   tokens: AccurateTokens | null;
   syncLogs?: { at: string; actor: string | null; action: "sync" | "ignore" | "blocked"; noPesanan: string; note: string }[];
+  accurateCustomers?: AccurateCustomerCache[];
 };
 
 const FILE = path.join(process.cwd(), "data", "store-v2.json");
@@ -85,6 +87,7 @@ function load(): LocalDB {
     parsed.settings = sanitizeSettings(parsed.settings);
     parsed.syncLogs = parsed.syncLogs ?? [];
     parsed.bundleComponents = parsed.bundleComponents ?? [];
+    parsed.accurateCustomers = parsed.accurateCustomers ?? [];
     return parsed;
   } catch {
     return emptyDb();
@@ -664,6 +667,19 @@ export class LocalStore implements DataStore {
     this.replaceCurrent(previous, original);
     if (nextSibling && sibling) this.replaceCurrent(sibling, nextSibling);
     else if (nextSibling) this.db.versions.push(nextSibling);
+    this.persist();
+  }
+
+  async findAccurateCustomer(nameKey: string): Promise<AccurateCustomerCache | null> {
+    return (this.db.accurateCustomers ?? []).find((row) => row.nameKey === nameKey) ?? null;
+  }
+
+  async saveAccurateCustomer(row: AccurateCustomerCache): Promise<void> {
+    const rows = this.db.accurateCustomers ?? [];
+    const index = rows.findIndex((item) => item.nameKey === row.nameKey);
+    if (index >= 0) rows[index] = row;
+    else rows.unshift(row);
+    this.db.accurateCustomers = rows;
     this.persist();
   }
 
