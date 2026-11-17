@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
+import { clampPageSize } from "@/lib/page-size";
 import { fail, requirePermission } from "@/lib/http";
 
 export async function GET(request: Request) {
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
       sync: url.searchParams.get("sync") === "need" || url.searchParams.get("sync") === "done" ? url.searchParams.get("sync") as "need" | "done" : "",
       q: url.searchParams.get("q") ?? "",
       page: Number.isFinite(page) ? page : 0,
-      pageSize: 25,
+      pageSize: clampPageSize(url.searchParams.get("limit") ?? url.searchParams.get("pageSize"), 25),
     });
     return NextResponse.json(result);
   } catch (error) {

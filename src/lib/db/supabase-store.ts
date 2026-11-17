@@ -8,6 +8,7 @@ import { planCancels, planImport } from "@/lib/domain/plan";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
 import type {
+  AccurateCustomerCache,
   AccurateTokens,
   AppMeta,
   AppSettings,
@@ -75,6 +76,12 @@ function client(): SupabaseClient {
 function explainBundle(error: { message?: string; code?: string } | null, action: string): never {
   const missing = error?.code === "42P01" || error?.code === "PGRST202" || error?.code === "PGRST205" || /bundle_components|ordered_skus|save_bundle_components|does not exist|schema cache/i.test(error?.message ?? "");
   if (missing) throw new AppError("Jalankan supabase/migrations/0011_product_names_bundle_weights.sql di SQL Editor.");
+  throw new AppError(error?.message || `Gagal ${action}.`);
+}
+
+function explainCustomers(error: { message?: string; code?: string } | null, action: string): never {
+  const missing = error?.code === "42P01" || error?.code === "PGRST205" || /accurate_customers|does not exist|schema cache/i.test(error?.message ?? "");
+  if (missing) throw new AppError("Jalankan supabase/migrations/0012_accurate_customers.sql di SQL Editor.");
   throw new AppError(error?.message || `Gagal ${action}.`);
 }
 
@@ -1012,6 +1019,31 @@ export class SupabaseStore implements DataStore {
       updated_at: tokens.updatedAt,
     });
     if (error) explain(error, "menyimpan token Accurate");
+  }
+
+  async findAccurateCustomer(nameKey: string): Promise<AccurateCustomerCache | null> {
+    const { data, error } = await this.sb.from("accurate_customers").select("*").eq("name_key", nameKey).maybeSingle();
+    if (error) explainCustomers(error, "membaca pelanggan Accurate");
+    const row = data as Row | null;
+    if (!row) return null;
+    return {
+      nameKey: str(row.name_key),
+      name: str(row.name),
+      customerNo: str(row.customer_no),
+      accurateId: row.accurate_id == null || row.accurate_id === "" ? null : String(row.accurate_id),
+      createdAt: str(row.created_at),
+    };
+  }
+
+  async saveAccurateCustomer(row: AccurateCustomerCache): Promise<void> {
+    const { error } = await this.sb.from("accurate_customers").upsert({
+      name_key: row.nameKey,
+      name: row.name,
+      customer_no: row.customerNo,
+      accurate_id: row.accurateId,
+      created_at: row.createdAt,
+    });
+    if (error) explainCustomers(error, "menyimpan pelanggan Accurate");
   }
 
   async createManualOrder(version: OrderVersion): Promise<void> {

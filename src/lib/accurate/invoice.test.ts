@@ -50,9 +50,10 @@ function version(patch: Partial<OrderVersion> = {}): OrderVersion {
 
 describe("buildInvoice", () => {
   it("sends unit price per piece and itemCashDiscount as unit diskon times qty", () => {
-    const draft = buildInvoice(version(), defaultSettings());
+    const draft = buildInvoice(version(), defaultSettings(), null, undefined, { customerNo: "C-ELOPS", customerName: "Elops" });
     expect(draft.blockedReason).toBeNull();
-    expect(draft.fields.customerNo).toBe("SHOPEE");
+    expect(draft.fields.customerNo).toBe("C-ELOPS");
+    expect(draft.customerName).toBe("Elops");
     expect(draft.fields.transDate).toBe("26/10/2026");
     expect(draft.fields.branchName).toBe("Lintas Surabaya");
     expect(draft.fields["detailItem[0].itemNo"]).toBe("FLMFDX003LS");
@@ -67,6 +68,20 @@ describe("buildInvoice", () => {
     const draft = buildInvoice(version(), defaultSettings(), "99");
     expect(draft.fields.id).toBe("99");
     expect(draft.action).toBe("update");
+  });
+
+  it("uses the buyer name and ignores channel customer mappings", () => {
+    const unresolved = buildInvoice(version(), defaultSettings());
+    expect(unresolved.fields.customerNo).toBeUndefined();
+    expect(unresolved.blockedReason).toMatch(/Elops/);
+    expect(unresolved.blockedReason).not.toMatch(/SHOPEE/);
+  });
+
+  it("falls back to the default customer only when the buyer name is empty", () => {
+    const draft = buildInvoice(version({ customerName: "  " }), defaultSettings());
+    expect(draft.blockedReason).toBeNull();
+    expect(draft.fields.customerNo).toBe("UMUM");
+    expect(draft.customerName).toBe("Pelanggan Umum");
   });
 
   it("blocks a line whose bundle weight is missing", () => {

@@ -1,4 +1,5 @@
-import { openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
+import { createCustomer, findCustomersByName, openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
+import { buyerName, missingCustomerScopes, normalizeCustomerKey, resolveBuyerCustomer } from "@/lib/accurate/customer";
 import { buildInvoice, invoiceUrl } from "@/lib/accurate/invoice";
 import { getStore } from "@/lib/db";
 import type { SyncWrite } from "@/lib/db/store";
@@ -79,7 +80,32 @@ export async function executeSync(nos: string[], by: string) {
     }
     const action = item.state?.accurateId ? "update" : "create";
     try {
-      const draft = buildInvoice(version, settings, item.state?.accurateId, invoiceUrl(opened.host));
+      const name = buyerName(version.customerName);
+      const cached = name ? await store.findAccurateCustomer(normalizeCustomerKey(name)) : null;
+      if (name && !cached) {
+        const missing = missingCustomerScopes(tokens.scope);
+        if (missing.length) {
+          throw new AppError(`Token Accurate belum mencakup ${missing.join(" ")}. Buka Koneksi Accurate dan klik Hubungkan Accurate lagi.`);
+        }
+      }
+      const resolved = await resolveBuyerCustomer({
+        buyerName: name,
+        defaultCustomerNo: settings.defaultCustomerNo,
+        defaultCustomerName: settings.defaultCustomerName,
+        cached,
+        lookup: (buyer) => findCustomersByName(tokens.accessToken, opened.host, opened.session, buyer),
+        create: (buyer) => createCustomer(tokens.accessToken, opened.host, opened.session, buyer),
+      });
+      if (resolved.cache) {
+        await store.saveAccurateCustomer({ ...resolved.cache, createdAt: new Date().toISOString() });
+      }
+      if (resolved.log) {
+        await store.logSync({ actor: by, action: "sync", noPesanan: version.noPesanan, note: resolved.log });
+      }
+      const draft = buildInvoice(version, settings, item.state?.accurateId, invoiceUrl(opened.host), {
+        customerNo: resolved.customerNo,
+        customerName: resolved.customerName,
+      });
       if (draft.blockedReason) throw new AppError(draft.blockedReason);
       const saved = await saveSalesInvoice(tokens.accessToken, opened.host, opened.session, draft);
       writes.push({

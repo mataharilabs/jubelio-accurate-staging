@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ActionButton, reported, reportedOk, TableShell } from "@/components/ui/feedback";
+import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { AppMeta, SyncReviewRow } from "@/lib/db/types";
 import { accurateIntent, needsAccurateSync, syncReason } from "@/lib/domain/phase3";
 import { rp } from "@/lib/format";
 
 type LogRow = { at: string; actor: string | null; action: string; noPesanan: string; note: string };
+type SyncMeta = AppMeta & { salesPush?: boolean; accurateDatabaseId?: string };
 
 const REASONS = ["Belum pernah sync", "Data berubah", "Status jadi RETURNED", "Status jadi CANCELED"];
 
@@ -16,7 +19,7 @@ function stamp(value?: string | null) {
 }
 
 export function SyncView() {
-  const [meta, setMeta] = useState<AppMeta | null>(null);
+  const [meta, setMeta] = useState<SyncMeta | null>(null);
   const [rows, setRows] = useState<SyncReviewRow[]>([]);
   const [log, setLog] = useState<LogRow[]>([]);
   const [q, setQ] = useState("");
@@ -26,7 +29,8 @@ export function SyncView() {
   const [channel, setChannel] = useState("");
   const [reason, setReason] = useState("");
   const [action, setAction] = useState("");
-  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [alias, setAlias] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,20 +39,25 @@ export function SyncView() {
   const [confirm, setConfirm] = useState<string[] | null>(null);
 
   async function load() {
-    const [metaRow, review, history] = await Promise.all([
-      api<AppMeta>("/api/meta"),
-      api<{ rows: SyncReviewRow[] }>("/api/sync/review"),
-      api<{ log?: LogRow[] }>("/api/sync/history"),
-    ]);
-    setMeta(metaRow);
-    setLog(history.log ?? []);
+    setLoading(true);
+    try {
+      const [metaRow, review, history] = await Promise.all([
+        api<SyncMeta>("/api/meta"),
+        api<{ rows: SyncReviewRow[] }>("/api/sync/review"),
+        api<{ log?: LogRow[] }>("/api/sync/history"),
+      ]);
+      setMeta(metaRow);
+      setLog(history.log ?? []);
     const visible = review.rows.filter((row) => needsAccurateSync({
       dataStatus: row.current.dataStatus,
       contentUpdatedAt: row.current.contentUpdatedAt,
       syncedAt: row.syncedAt,
     }));
-    setRows(visible);
-    setSelected((current) => new Set([...current].filter((no) => visible.some((row) => row.noPesanan === no))));
+      setRows(visible);
+      setSelected((current) => new Set([...current].filter((no) => visible.some((row) => row.noPesanan === no))));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -82,11 +91,21 @@ export function SyncView() {
     if (action && item.intent.label !== action) return false;
     return true;
   });
-  const pages = Math.max(1, Math.ceil(filtered.length / 25));
-  const pageRows = filtered.slice(page * 25, page * 25 + 25);
+  const queue = useClientPage(filtered, "sync-queue", 25);
+  const logPage = useClientPage(log, "sync-log", 50);
+  const pageRows = queue.shown;
   const chosen = described.filter((item) => selected.has(item.row.noPesanan));
   const syncable = chosen.filter((item) => !item.intent.block && !item.intent.label.startsWith("Tidak dikirim"));
-  const last = log.find((entry) => entry.action === "sync");
+  const salesPush = meta?.salesPush === true;
+  const databaseId = meta?.accurateDatabaseId ?? "";
+  const databaseLabel = alias && databaseId ? `${alias} (${databaseId})` : databaseId;
+  useEffect(() => {
+    if (!salesPush || !databaseId) return;
+    api<{ databases: { id: string; alias: string }[] }>("/api/accurate/databases")
+      .then((result) => setAlias(result.databases.find((item) => item.id === databaseId)?.alias ?? ""))
+      .catch(() => setAlias(""));
+  }, [salesPush, databaseId]);
+  const last = log.find((entry) => entry.action === "sync" && !entry.note.startsWith("Pelanggan") && !entry.note.startsWith("Nama pembeli"));
   const lastLabel = last ? `${stamp(last.at)} oleh ${last.actor || "sistem"}` : "belum pernah";
 
   async function ignore(nos: string[]) {
@@ -96,12 +115,12 @@ export function SyncView() {
       for (const noPesanan of nos) {
         await api("/api/sync/decision", { method: "POST", body: JSON.stringify({ noPesanan, decision: "ignored" }) });
       }
-      setMessage(`${nos.length} pesanan diabaikan. Tgl Synced diisi dan pesanan keluar dari antrean.`);
+      setMessage(reportedOk(`${nos.length} pesanan diabaikan. Tgl Synced diisi dan pesanan keluar dari antrean.`));
       setSelected(new Set());
       setConfirm(null);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal mengabaikan.");
+      setError(reported(err, "Gagal mengabaikan."));
     } finally {
       setBusy(false);
     }
@@ -112,12 +131,12 @@ export function SyncView() {
     setError(null);
     try {
       await api("/api/sync/execute", { method: "POST", body: JSON.stringify({ nos }) });
-      setMessage("Sync selesai.");
+      setMessage(reportedOk("Sync selesai."));
       setConfirm(null);
       setSelected(new Set());
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync gagal.");
+      setError(reported(err, "Sync gagal."));
       setConfirm(null);
       await load().catch(() => undefined);
     } finally {
@@ -141,23 +160,25 @@ export function SyncView() {
         <div className="actions">
           <span className="small mut">Terakhir sync: <b>{lastLabel}</b></span>
           <button className="btn pri" disabled={!syncable.length || busy} onClick={() => setConfirm(syncable.map((item) => item.row.noPesanan))}>Sync ke Accurate ({syncable.length})</button>
-          <button className="btn" disabled={!chosen.length || busy} onClick={() => ignore(chosen.map((item) => item.row.noPesanan))}>Abaikan Sync ({chosen.length})</button>
+          <ActionButton className="btn" disabled={!chosen.length || busy} onClick={() => ignore(chosen.map((item) => item.row.noPesanan))}>Abaikan Sync ({chosen.length})</ActionButton>
           <button className="btn" onClick={() => setRulesOpen(true)}>Aturan Accurate</button>
         </div>
       </div>
       {error ? <div className="warnbox" style={{ marginBottom: 12 }}>{error}</div> : null}
       {message ? <div className="note" style={{ marginBottom: 12 }}>{message}</div> : null}
-      <div className="warnbox" style={{ marginBottom: 12 }}>Pengiriman jual, cancel, dan retur ke Accurate tetap ditahan sampai <b>ACCURATE_SALES_PUSH=enabled</b>. Tombol Sync tidak mengirim data selama guard itu mati.</div>
+      {meta && salesPush && databaseId ? <div className="note" style={{ marginBottom: 12 }}>Pengiriman penjualan aktif. Sync mengirim data ke Accurate, database <b>{databaseLabel}</b>.</div> : null}
+      {meta && salesPush && !databaseId ? <div className="warnbox" style={{ marginBottom: 12 }}>Pengiriman penjualan aktif, tetapi ID database Accurate kosong. Isi database di Koneksi Accurate sebelum sync.</div> : null}
+      {meta && !salesPush ? <div className="warnbox" style={{ marginBottom: 12 }}>Pengiriman jual, cancel, dan retur ke Accurate tetap ditahan sampai <b>ACCURATE_SALES_PUSH=enabled</b>. Tombol Sync tidak mengirim data selama guard itu mati.</div> : null}
       <div className="filterbar">
-        <div className="f grow"><label>Cari</label><input value={q} placeholder="No pesanan, pelanggan…" onChange={(event) => { setQ(event.target.value); setPage(0); }} /></div>
-        <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); setPage(0); }} /></div>
-        <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); setPage(0); }} /></div>
-        <div className="f"><label>Toko</label><select value={store} onChange={(event) => { setStore(event.target.value); setPage(0); }}><option value="">Semua</option>{stores.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Channel</label><select value={channel} onChange={(event) => { setChannel(event.target.value); setPage(0); }}><option value="">Semua</option>{channels.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Alasan</label><select value={reason} onChange={(event) => { setReason(event.target.value); setPage(0); }}><option value="">Semua</option>{REASONS.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Tindakan di Accurate</label><select value={action} onChange={(event) => { setAction(event.target.value); setPage(0); }}><option value="">Semua</option>{actions.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f grow"><label>Cari</label><input value={q} placeholder="No pesanan, pelanggan…" onChange={(event) => { setQ(event.target.value); queue.setPage(0); }} /></div>
+        <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); queue.setPage(0); }} /></div>
+        <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); queue.setPage(0); }} /></div>
+        <div className="f"><label>Toko</label><select value={store} onChange={(event) => { setStore(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{stores.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Channel</label><select value={channel} onChange={(event) => { setChannel(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{channels.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Alasan</label><select value={reason} onChange={(event) => { setReason(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{REASONS.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Tindakan di Accurate</label><select value={action} onChange={(event) => { setAction(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{actions.map((item) => <option key={item}>{item}</option>)}</select></div>
       </div>
-      <div className="tablecard">
+      <TableShell loading={loading}>
         <div className="tscroll">
           <table className="cards small">
             <thead><tr><th></th><th>No Pesanan</th><th>Tgl Pesanan</th><th>Toko</th><th>Channel</th><th>Status</th><th className="n">Revenue Bersih</th><th>Alasan</th><th>Tutup buku</th><th>Tindakan di Accurate</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
@@ -180,7 +201,7 @@ export function SyncView() {
                     <td data-label="Synced">{stamp(row.syncedAt)}</td>
                     <td className="nowrap">
                       <button className="btn sm pri" disabled={busy || intent.block || intent.label.startsWith("Tidak dikirim")} title={intent.block ? "Sudah tutup buku — hanya Abaikan" : intent.label.startsWith("Tidak dikirim") ? "Tidak dikirim. Gunakan Abaikan." : "Sync"} onClick={() => setConfirm([row.noPesanan])}>Sync</button>
-                      <button className="btn sm" disabled={busy} onClick={() => ignore([row.noPesanan])}>Abaikan</button>
+                      <ActionButton className="btn sm" disabled={busy} onClick={() => ignore([row.noPesanan])}>Abaikan</ActionButton>
                     </td>
                   </tr>
                 );
@@ -189,39 +210,36 @@ export function SyncView() {
             </tbody>
           </table>
         </div>
-        <div className="pager">
-          <span>Menampilkan {pageRows.length ? page * 25 + 1 : 0}–{page * 25 + pageRows.length} dari {filtered.length} · 25/halaman</span>
-          <span>
-            <button className="btn sm" disabled={!page} onClick={() => setPage((value) => value - 1)}>‹</button>
-            <button className="btn sm on">{Math.min(page + 1, pages)}</button>
-            <button className="btn sm" disabled={page >= pages - 1} onClick={() => setPage((value) => value + 1)}>›</button>
-          </span>
-        </div>
-      </div>
+        <Pager page={queue.page} pageSize={queue.pageSize} total={queue.total} shown={pageRows.length} onPage={queue.setPage} onPageSize={queue.setPageSize} />
+      </TableShell>
       <div className="tablecard mt">
         <div className="th3"><b>Log sinkron</b> <span className="small mut">setiap Sync dan Abaikan dicatat siapa dan kapan</span></div>
         <div className="tscroll"><table className="small cards"><thead><tr><th>Waktu</th><th>Oleh</th><th>Aksi</th><th>No pesanan</th><th>Keterangan</th></tr></thead><tbody>
-          {log.slice(0, 50).map((entry, index) => (
+          {logPage.shown.map((entry, index) => (
             <tr key={`${entry.at}-${entry.noPesanan}-${index}`}>
               <td data-label="Waktu">{stamp(entry.at)}</td>
               <td data-label="Oleh">{entry.actor || "—"}</td>
-              <td data-label="Aksi"><span className={`pill ${entry.action === "ignore" ? "p-gray" : entry.action === "blocked" ? "p-warn" : "p-info"}`}>{entry.action === "ignore" ? "Abaikan Sync" : entry.action === "sync" ? "Sync ke Accurate" : "Ditahan"}</span></td>
+              <td data-label="Aksi"><span className={`pill ${entry.action === "ignore" ? "p-gray" : entry.action === "blocked" ? "p-warn" : "p-info"}`}>{entry.note.startsWith("Pelanggan") || entry.note.startsWith("Nama pembeli") ? "Pelanggan" : entry.action === "ignore" ? "Abaikan Sync" : entry.action === "sync" ? "Sync ke Accurate" : "Ditahan"}</span></td>
               <td data-label="No">{entry.noPesanan}</td>
               <td data-label="Keterangan" className="small">{entry.note}</td>
             </tr>
           ))}
           {!log.length ? <tr><td colSpan={5} className="mut">Belum ada log.</td></tr> : null}
         </tbody></table></div>
+        <Pager page={logPage.page} pageSize={logPage.pageSize} total={logPage.total} shown={logPage.shown.length} onPage={logPage.setPage} onPageSize={logPage.setPageSize} />
       </div>
       {confirm ? (
         <div className="modal-bg on" onClick={(event) => { if (event.target === event.currentTarget) setConfirm(null); }}>
           <div className="modal">
             <h2>Sync {confirm.length} pesanan ke Accurate?</h2>
-            <div className="small mut">Tidak ada data yang dikirim selama ACCURATE_SALES_PUSH belum enabled. Cancel yang sudah tutup buku tidak masuk tombol ini.</div>
-            <div className="warnbox mt">Guard penjualan masih aktif. Accurate production tidak menerima penjualan, cancel, atau retur dari tombol ini.</div>
+            {!meta ? <div className="small mut">Memeriksa status pengiriman…</div> : null}
+            {meta && salesPush && databaseId ? <div className="note mt">Data AKAN dikirim ke Accurate (database {databaseLabel}). Cancel yang sudah tutup buku tidak masuk tombol ini.</div> : null}
+            {meta && salesPush && !databaseId ? <div className="warnbox mt">ID database Accurate kosong. Sync ditahan sampai database diisi di Koneksi Accurate.</div> : null}
+            {meta && !salesPush ? <div className="small mut">Tidak ada data yang dikirim selama ACCURATE_SALES_PUSH belum enabled. Cancel yang sudah tutup buku tidak masuk tombol ini.</div> : null}
+            {meta && !salesPush ? <div className="warnbox mt">Guard penjualan masih aktif. Accurate production tidak menerima penjualan, cancel, atau retur dari tombol ini.</div> : null}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
               <button className="btn" onClick={() => setConfirm(null)}>Batal</button>
-              <button className="btn pri" disabled={busy} onClick={() => syncNow(confirm)}>Sync sekarang</button>
+              <ActionButton className="btn pri" disabled={busy || (salesPush && !databaseId)} onClick={() => syncNow(confirm)}>Sync sekarang</ActionButton>
             </div>
           </div>
         </div>
@@ -231,7 +249,7 @@ export function SyncView() {
           <div className="modal" style={{ width: 760 }}>
             <h2>Aturan ke Accurate · Cancel / Retur / Tutup buku</h2>
             <ol className="rules">
-              <li>Cancel belum tutup buku: status CANCELED di web, penjualan dihapus saat sync. Tidak di-soft-delete. Pengiriman masih ditahan guard.</li>
+              <li>Cancel belum tutup buku: status CANCELED di web, penjualan dihapus saat sync. Tidak di-soft-delete. {salesPush ? "Pengiriman penjualan sedang aktif." : "Pengiriman masih ditahan guard."}</li>
               <li>Cancel sudah tutup buku: tidak diproses otomatis. Hanya Abaikan, lalu Finance menangani manual.</li>
               <li>Retur Case 1: harga web tetap. Belum tutup buku = hapus penjualan. Sudah tutup buku = buat Retur.</li>
               <li>Retur Case 2 dan 3: pesanan asal tetap berharga. Pesanan -R harga 0, channel Internal, toko Barang Hilang, masuk sebagai penjualan biasa.</li>

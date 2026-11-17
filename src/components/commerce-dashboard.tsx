@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart, CHART_PAL, Donut } from "@/components/charts";
 import { downloadExport } from "@/components/download";
+import { ActionButton, reported, reportedOk, Spinner } from "@/components/ui/feedback";
+import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
 import { dayShort } from "@/lib/domain/aggregate";
@@ -50,6 +52,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
   const [report, setReport] = useState<DashboardReport | null>(null);
   const [previous, setPrevious] = useState<DashboardReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api<{ reports: { report: DashboardReport }[]; options: FilterOptions }>("/api/dashboard", {
@@ -89,14 +92,18 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     const periods = compare
       ? [{ label: "Periode", from, to }, { label: "Pembanding", from: compareWindow.from, to: compareWindow.to }]
       : [{ label: "Periode", from, to }];
+    let cancel = false;
+    setLoading(true);
     api<{ reports: { report: DashboardReport }[] }>("/api/dashboard", {
       method: "POST",
       body: JSON.stringify({ query, periods }),
     }).then((result) => {
+      if (cancel) return;
       setReport(result.reports[0]?.report ?? null);
       setPrevious(compare ? result.reports[1]?.report ?? null : null);
       setError(null);
-    }).catch((err: Error) => setError(err.message));
+    }).catch((err: Error) => { if (!cancel) setError(reported(err, "Gagal memuat dashboard.")); }).finally(() => { if (!cancel) setLoading(false); });
+    return () => { cancel = true; };
   }, [query, compare, from, to, status]);
 
   function applyPreset(next: Preset) {
@@ -140,7 +147,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           <b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : " (Marketing = 0)"}. Default periode: <b>bulan berjalan</b>. Pesanan berstatus data <b>Dihapus</b> tidak dihitung.
         </div>
         <div className="actions">
-          <button className="btn" onClick={() => downloadExport(mode === "toko" ? "dashboard-toko.xlsx" : "dashboard-produk.xlsx", { target: "dashboard", format: "xlsx", query }).catch((err: Error) => setError(err.message))}>Export</button>
+          <ActionButton className="btn" onClick={() => downloadExport(mode === "toko" ? "dashboard-toko.xlsx" : "dashboard-produk.xlsx", { target: "dashboard", format: "xlsx", query }).then(() => reportedOk("Ekspor selesai.")).catch((err: Error) => setError(reported(err, "Ekspor gagal.")))}>Export</ActionButton>
         </div>
       </div>
       <div className="filterbar">
@@ -236,9 +243,9 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             </>
           ) : (
             <>
-              <PerTable title="Penjualan per Produk" rows={(report?.products ?? []).map((row) => ({ ...row, key: row.name ? `${row.sku} · ${row.name}` : row.sku }))} compareRows={previous?.products} metric={metric} compare={compare} limit={10} />
+              <PerTable title="Penjualan per Produk" rows={(report?.products ?? []).map((row) => ({ ...row, key: row.name ? `${row.sku} · ${row.name}` : row.sku }))} compareRows={previous?.products} metric={metric} compare={compare} defaultSize={10} />
               <PerTable title="Penjualan per Kategori" rows={report?.categories ?? []} compareRows={previous?.categories} metric={metric} compare={compare} />
-              <PerTable title="Penjualan per Brand" rows={report?.brands ?? []} compareRows={previous?.brands} metric={metric} compare={compare} limit={10} />
+              <PerTable title="Penjualan per Brand" rows={report?.brands ?? []} compareRows={previous?.brands} metric={metric} compare={compare} defaultSize={10} />
             </>
           )}
           <div className="tablecard mt">
@@ -248,7 +255,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
                 <button className={geo === "cities" ? "on" : ""} onClick={() => setGeo("cities")}>Kota</button>
               </div>
             </div>
-            <PerBody rows={(geo === "provinces" ? report?.provinces : report?.cities) ?? []} compareRows={geo === "provinces" ? previous?.provinces : previous?.cities} metric={metric} compare={compare} limit={10} col={geo === "provinces" ? "Provinsi" : "Kota"} />
+            <PerBody rows={(geo === "provinces" ? report?.provinces : report?.cities) ?? []} compareRows={geo === "provinces" ? previous?.provinces : previous?.cities} metric={metric} compare={compare} defaultSize={10} tableKey={geo} col={geo === "provinces" ? "Provinsi" : "Kota"} />
           </div>
           <div className="grid g2 mt">
             <Best title={mode === "toko" ? "Best Seller Produk" : "Best Seller Toko"} rows={mode === "toko" ? (report?.products ?? []).map((row) => ({ ...row, key: row.name || row.sku })) : (report?.stores ?? [])} metric={metric} />
@@ -265,7 +272,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             </ul>
           </div>
         </>
-      ) : <div className="card">Memuat…</div>}
+      ) : <div className="card" style={{ position: "relative" }}>{loading ? <div className="table-loading" role="status"><Spinner /> Memuat…</div> : "Memuat…"}</div>}
     </div>
   );
 }
@@ -287,21 +294,23 @@ function Kpi({ label, value, hint, current, prior, compare, invert, money = true
   );
 }
 
-function PerTable({ title, rows, compareRows, metric, compare, limit }: { title: string; rows: GroupRow[]; compareRows?: GroupRow[]; metric: Metric; compare: boolean; limit?: number }) {
+function PerTable({ title, rows, compareRows, metric, compare, defaultSize = 25 }: { title: string; rows: GroupRow[]; compareRows?: GroupRow[]; metric: Metric; compare: boolean; defaultSize?: number }) {
   return (
     <div className="tablecard mt">
       <div className="th3"><b>{title}</b> <small className="mut">urut {METRIC_LABEL[metric]}</small></div>
-      <PerBody rows={rows} compareRows={compareRows} metric={metric} compare={compare} limit={limit} col={title.replace("Penjualan per ", "")} />
+      <PerBody rows={rows} compareRows={compareRows} metric={metric} compare={compare} defaultSize={defaultSize} tableKey={title} col={title.replace("Penjualan per ", "")} />
     </div>
   );
 }
 
-function PerBody({ rows, compareRows, metric, compare, limit, col }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; metric: Metric; compare: boolean; limit?: number; col: string }) {
+function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSize = 25 }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; metric: Metric; compare: boolean; col: string; tableKey: string; defaultSize?: number }) {
   const sorted = [...rows].sort((a, b) => metricOf(b, metric) - metricOf(a, metric));
-  const shown = limit ? sorted.slice(0, limit) : sorted;
+  const page = useClientPage(sorted, `dash-${tableKey}-${metric}`, defaultSize);
+  const shown = page.shown;
   const total = sorted.reduce((sum, row) => sum + Math.max(0, metricOf(row, metric)), 0) || 1;
   const prior = new Map((compareRows ?? []).map((row) => [row.key, row]));
   return (
+    <>
     <div className="tscroll"><table>
       <thead><tr><th>{col}</th><th className="n">Pesanan</th><th className="n">Qty</th><th className={metric === "gross" ? "n hl" : "n"}>Penjualan Kotor</th><th className={metric === "net" ? "n hl" : "n"}>Revenue Bersih</th><th className={metric === "profit" ? "n hl" : "n"}>Profit</th><th className="n">Porsi</th>{compare ? <th className="n">vs periode</th> : null}</tr></thead>
       <tbody>
@@ -325,19 +334,23 @@ function PerBody({ rows, compareRows, metric, compare, limit, col }: { rows: { k
         {!shown.length ? <tr><td colSpan={8} className="mut">Tidak ada data</td></tr> : null}
       </tbody>
     </table></div>
+    <Pager page={page.page} pageSize={page.pageSize} total={page.total} shown={shown.length} onPage={page.setPage} onPageSize={page.setPageSize} />
+    </>
   );
 }
 
 function Best({ title, rows, metric }: { title: string; rows: GroupRow[]; metric: Metric }) {
-  const top = [...rows].sort((a, b) => metricOf(b, metric) - metricOf(a, metric)).slice(0, 10);
-  const max = Math.max(1, ...top.map((row) => metricOf(row, metric)));
+  const sorted = [...rows].sort((a, b) => metricOf(b, metric) - metricOf(a, metric));
+  const page = useClientPage(sorted, `best-${title}`, 10);
+  const max = Math.max(1, ...page.shown.map((row) => metricOf(row, metric)));
   return (
     <div className="card">
-      <h3>{title} <small>Top 10 · urut {METRIC_LABEL[metric]}</small></h3>
-      <table className="rank">{top.map((row, index) => (
-        <tr key={row.key}><td className="no">{index + 1}</td><td><div className="small">{row.key}</div><div className="bar-in"><i style={{ width: `${Math.max(1, metricOf(row, metric) / max * 100)}%` }} /></div></td><td className="n small"><b>{rpCompact(metricOf(row, metric))}</b><div className="mut">{numId(row.qty)} pcs</div></td></tr>
+      <h3>{title} <small>urut {METRIC_LABEL[metric]}</small></h3>
+      <table className="rank">{page.shown.map((row, index) => (
+        <tr key={row.key}><td className="no">{page.page * page.pageSize + index + 1}</td><td><div className="small">{row.key}</div><div className="bar-in"><i style={{ width: `${Math.max(1, metricOf(row, metric) / max * 100)}%` }} /></div></td><td className="n small"><b>{rpCompact(metricOf(row, metric))}</b><div className="mut">{numId(row.qty)} pcs</div></td></tr>
       ))}</table>
-      {!top.length ? <div className="mut small">Tidak ada data</div> : null}
+      {!page.total ? <div className="mut small">Tidak ada data</div> : null}
+      <Pager page={page.page} pageSize={page.pageSize} total={page.total} shown={page.shown.length} onPage={page.setPage} onPageSize={page.setPageSize} />
     </div>
   );
 }

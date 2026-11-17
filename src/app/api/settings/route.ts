@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import type { AppSettings } from "@/lib/db/types";
+import { missingCustomerScopes } from "@/lib/accurate/customer";
 import { accurateConfigured, accurateEnv, missingAccurateEnv, salesPushEnabled } from "@/lib/env";
 import { recordAudit } from "@/lib/access/store";
 import { fail, requirePermission } from "@/lib/http";
@@ -22,6 +23,8 @@ export async function GET() {
         redirectUri: accurateEnv().redirectUri,
         databaseIdFromEnv: Boolean(accurateEnv().databaseId),
         salesPush: salesPushEnabled(),
+        scope: tokens?.scope ?? null,
+        missingCustomerScopes: tokens?.accessToken ? missingCustomerScopes(tokens.scope) : [],
       },
     });
   } catch (error) {

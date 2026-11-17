@@ -1,6 +1,7 @@
 import type { CleanLine } from "@/lib/cleanup/rapikan";
 import type { GeoMapInput, GeoMapWriteResult } from "@/lib/db/geo-maps";
 import type {
+  AccurateCustomerCache,
   AccurateTokens,
   AppMeta,
   AppSettings,
@@ -85,6 +86,8 @@ export interface DataStore {
   saveSettings(settings: AppSettings): Promise<AppSettings>;
   getTokens(): Promise<AccurateTokens | null>;
   saveTokens(tokens: AccurateTokens | null): Promise<void>;
+  findAccurateCustomer(nameKey: string): Promise<AccurateCustomerCache | null>;
+  saveAccurateCustomer(row: AccurateCustomerCache): Promise<void>;
   currentVersions(): Promise<OrderVersion[]>;
   createManualOrder(version: OrderVersion): Promise<void>;
 }

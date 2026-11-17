@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Inter } from "next/font/google";
+import { AppChrome } from "@/components/ui/feedback";
 import "./globals.css";
 
 const sans = Inter({
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="id">
-      <body className={`${sans.variable} ${mono.variable} ${sans.className} antialiased`}>{children}</body>
+      <body className={`${sans.variable} ${mono.variable} ${sans.className} antialiased`}><AppChrome />{children}</body>
     </html>
   );
 }

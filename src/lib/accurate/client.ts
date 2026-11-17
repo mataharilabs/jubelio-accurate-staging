@@ -1,10 +1,21 @@
+import {
+  customerListQuery,
+  customerNoRequired,
+  deterministicCustomerNo,
+  readCustomerHits,
+  readSavedCustomer,
+  selectExactCustomer,
+  type CustomerHit,
+} from "@/lib/accurate/customer";
 import { deleteInvoiceUrl, encodeBody, invoiceUrl, type InvoiceDraft } from "@/lib/accurate/invoice";
 import type { AccurateTokens } from "@/lib/db/types";
 import { accurateEnv } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 
 const ACCOUNT = "https://account.accurate.id";
-export const ACCURATE_SCOPE = "sales_invoice_view sales_invoice_save";
+export const ACCURATE_SCOPE = "sales_invoice_view sales_invoice_save customer_view customer_save warehouse_view branch_view";
+export const CUSTOMER_LIST_PATH = "/accurate/api/customer/list.do";
+export const CUSTOMER_SAVE_PATH = "/accurate/api/customer/save.do";
 
 type TokenResponse = {
   access_token?: string;
@@ -176,6 +187,69 @@ export async function deleteSalesInvoice(
     throw new AppError(detail || "Accurate menolak penghapusan faktur.");
   }
   return { response: json };
+}
+
+function customerUrl(host: string, path: string): string {
+  return `${host.replace(/\/$/, "")}${path}`;
+}
+
+async function listCustomers(accessToken: string, host: string, session: string, name: string, mode: "keywords" | "name"): Promise<CustomerHit[]> {
+  const json = await accurateGet(`${customerUrl(host, CUSTOMER_LIST_PATH)}?${customerListQuery(name, mode)}`, accessToken, session);
+  return readCustomerHits(json);
+}
+
+/** Exact name match via filter.keywords, then filter.name when keywords miss. */
+export async function findCustomersByName(accessToken: string, host: string, session: string, name: string): Promise<CustomerHit[]> {
+  let hits: CustomerHit[] = [];
+  let keywordError: unknown = null;
+  try {
+    hits = await listCustomers(accessToken, host, session, name, "keywords");
+  } catch (error) {
+    keywordError = error;
+  }
+  if (selectExactCustomer(hits, name)) return hits;
+  try {
+    const byName = await listCustomers(accessToken, host, session, name, "name");
+    const seen = new Set(hits.map((row) => `${row.customerNo}\n${row.name}`));
+    return [...hits, ...byName.filter((row) => !seen.has(`${row.customerNo}\n${row.name}`))];
+  } catch (error) {
+    if (hits.length) return hits;
+    throw keywordError ?? error;
+  }
+}
+
+export async function saveCustomer(accessToken: string, host: string, session: string, name: string, customerNo?: string): Promise<CustomerHit> {
+  const params = new URLSearchParams();
+  params.append("name", name);
+  if (customerNo) params.append("customerNo", customerNo);
+  const response = await postForm(customerUrl(host, CUSTOMER_SAVE_PATH), params, {
+    Authorization: `Bearer ${accessToken}`,
+    "X-Session-ID": session,
+  });
+  const json = (await response.json().catch(() => ({}))) as AccurateEnvelope;
+  if (!response.ok || json.s === false) {
+    const detail = Array.isArray(json.d) ? json.d.map(String).join(" ") : `Accurate menolak pelanggan (${response.status}).`;
+    throw new AppError(detail || "Accurate menolak pelanggan.");
+  }
+  return readSavedCustomer(json, name);
+}
+
+/** Let Accurate auto-number. If the company requires a number, send a deterministic one. */
+export async function createCustomer(accessToken: string, host: string, session: string, name: string): Promise<CustomerHit> {
+  try {
+    return await saveCustomer(accessToken, host, session, name);
+  } catch (error) {
+    if (!(error instanceof AppError) || !customerNoRequired(error.message)) throw error;
+    const customerNo = deterministicCustomerNo(name);
+    try {
+      return await saveCustomer(accessToken, host, session, name, customerNo);
+    } catch (retryError) {
+      const again = await findCustomersByName(accessToken, host, session, name).catch(() => []);
+      const existing = selectExactCustomer(again, name);
+      if (existing) return existing.hit;
+      throw retryError;
+    }
+  }
 }
 
 export function draftWithHost(draft: InvoiceDraft, host: string, sessionReady: boolean): InvoiceDraft {

@@ -203,6 +203,14 @@ export type AppSettings = {
   defaultBranch: string;
 };
 
+export type AccurateCustomerCache = {
+  nameKey: string;
+  name: string;
+  customerNo: string;
+  accurateId: string | null;
+  createdAt: string;
+};
+
 export type AccurateTokens = {
   accessToken: string;
   refreshToken: string | null;

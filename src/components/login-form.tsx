@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/feedback";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api-client";
 import { setPasswordPath } from "@/lib/auth/links";
@@ -86,7 +87,7 @@ export function LoginForm() {
             <Input id="recover-email" type="email" autoComplete="username" className="mt-1" value={email} onChange={(event) => setEmail(event.target.value)} required />
             {sent ? <p className="mt-3 text-sm text-muted">Jika email terdaftar, tautan pemulihan sudah dikirim.</p> : null}
             {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
-            <Button type="submit" className="mt-6 w-full" disabled={busy}>{busy ? "Mengirim…" : "Kirim tautan"}</Button>
+            <Button type="submit" className="mt-6 w-full" disabled={busy}>{busy ? <Spinner /> : null}{busy ? "Mengirim…" : "Kirim tautan"}</Button>
             <button type="button" className="mt-4 text-sm text-primary" onClick={() => { setRecover(false); setSent(false); setError(null); }}>Kembali ke masuk</button>
           </form>
         ) : null}
@@ -110,7 +111,7 @@ export function LoginForm() {
           <Input id="password" type="password" autoComplete="current-password" className="mt-1" value={password} onChange={(event) => setPassword(event.target.value)} required />
           {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
           <Button type="submit" className="mt-6 w-full" disabled={busy}>
-            {busy ? "Memeriksa…" : "Masuk"}
+            {busy ? <Spinner /> : null}{busy ? "Memeriksa…" : "Masuk"}
           </Button>
           {mode === "supabase" ? (
             <button type="button" className="mt-4 text-sm text-primary" onClick={() => { setRecover(true); setError(null); }}>Lupa password</button>

@@ -1,3 +1,4 @@
+import { buyerName } from "@/lib/accurate/customer";
 import { accurateDate, formatDecimal } from "@/lib/format";
 import type { AppSettings, OrderVersion } from "@/lib/db/types";
 
@@ -24,15 +25,19 @@ function same(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-function resolveCustomer(version: OrderVersion, settings: AppSettings): { customerNo: string; customerName: string } | null {
-  const byToko = version.storeName
-    ? settings.customerMappings.find((row) => row.matchType === "toko" && same(row.matchValue, version.storeName))
-    : undefined;
-  if (byToko?.customerNo) return { customerNo: byToko.customerNo, customerName: byToko.customerName || byToko.customerNo };
-  const byChannel = version.channel
-    ? settings.customerMappings.find((row) => row.matchType === "channel" && same(row.matchValue, version.channel))
-    : undefined;
-  if (byChannel?.customerNo) return { customerNo: byChannel.customerNo, customerName: byChannel.customerName || byChannel.customerNo };
+export type ResolvedCustomer = { customerNo: string; customerName: string };
+
+/**
+ * Buyer name always wins. Channel/store customerMappings are not used.
+ * A resolved Accurate customerNo is required when the order has a buyer name.
+ * The default customer is only used when the buyer name is empty.
+ */
+function resolveCustomer(version: OrderVersion, settings: AppSettings, resolved?: ResolvedCustomer | null): { customerNo: string; customerName: string } | null {
+  const name = buyerName(version.customerName);
+  if (name) {
+    if (resolved?.customerNo) return { customerNo: resolved.customerNo, customerName: resolved.customerName || name };
+    return null;
+  }
   if (settings.defaultCustomerNo) {
     return { customerNo: settings.defaultCustomerNo, customerName: settings.defaultCustomerName || settings.defaultCustomerNo };
   }
@@ -58,13 +63,16 @@ export function deleteInvoiceUrl(host: string): string {
  * detailItem[n].unitPrice is the cleaned Unit Price (per piece).
  * itemCashDiscount = Unit Diskon × Qty.
  */
-export function buildInvoice(version: OrderVersion, settings: AppSettings, accurateId?: string | null, endpoint = `{host}${SALES_INVOICE_PATH}`): InvoiceDraft {
+export function buildInvoice(version: OrderVersion, settings: AppSettings, accurateId?: string | null, endpoint = `{host}${SALES_INVOICE_PATH}`, resolved?: ResolvedCustomer | null): InvoiceDraft {
   const warnings: string[] = [];
   const reasons: string[] = [];
-  const customer = resolveCustomer(version, settings);
+  const name = buyerName(version.customerName);
+  const customer = resolveCustomer(version, settings, resolved);
   if (!version.lines.length) reasons.push("Pesanan tidak punya baris.");
   if (version.lines.length && !customer) {
-    reasons.push(`Pelanggan Accurate belum dipetakan untuk channel "${version.channel}" / toko "${version.storeName}".`);
+    reasons.push(name
+      ? `Nama pembeli "${name}" belum dipasangkan ke nomor pelanggan Accurate.`
+      : "Pesanan tidak punya nama pembeli dan pelanggan default kosong.");
   }
   const location = version.lokasiGudang
     ? settings.locationMappings.find((row) => same(row.lokasiGudang, version.lokasiGudang ?? ""))
@@ -81,6 +89,7 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
   fields.transDate = accurateDate(version.tanggal ? `${version.tanggal}Z` : null, version.day);
   fields.description = `Jubelio ${version.noPesanan}`.slice(0, 500);
   const branchName = location?.branchName || settings.defaultBranch;
+  // Satu gudang Accurate (biasanya "Utama") lewat defaultWarehouse bila lokasi tidak punya mapping.
   const warehouseName = location?.warehouseName || settings.defaultWarehouse;
   if (branchName) fields.branchName = branchName;
 
