@@ -19,5 +19,6 @@ export function reviewRow(current: OrderVersion, synced: OrderVersion | null, st
     changes,
     accurateNumber: state?.accurateNumber ?? null,
     syncedAt: state?.syncedAt ?? null,
+    lastSyncError: null,
   };
 }

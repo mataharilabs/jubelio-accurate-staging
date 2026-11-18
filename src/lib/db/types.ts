@@ -346,6 +346,8 @@ export type SyncReviewRow = {
   changes: FieldChange[];
   accurateNumber: string | null;
   syncedAt?: string | null;
+  /** Latest failed sync for this version, until a later success. */
+  lastSyncError?: string | null;
 };
 
 export type ImportResult = {

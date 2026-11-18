@@ -6,7 +6,7 @@ import { planCancels, planImport } from "@/lib/domain/plan";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { matchesOrderFilter, matchesOrderScope } from "@/lib/domain/order-filter";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
-import { buildReturnVersions, canSoftDeleteOrder } from "@/lib/domain/phase3";
+import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion } from "@/lib/domain/phase3";
 import { reportOf } from "@/lib/domain/aggregate";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
@@ -86,6 +86,7 @@ function load(): LocalDB {
     if (parsed.version !== 2) return emptyDb();
     parsed.settings = sanitizeSettings(parsed.settings);
     parsed.syncLogs = parsed.syncLogs ?? [];
+    parsed.syncItems = parsed.syncItems ?? [];
     parsed.bundleComponents = parsed.bundleComponents ?? [];
     parsed.accurateCustomers = parsed.accurateCustomers ?? [];
     return parsed;
@@ -391,7 +392,19 @@ export class LocalStore implements DataStore {
       const state = this.db.syncStates.find((row) => row.noPesanan === version.noPesanan) ?? null;
       const synced = state?.lastSyncedVersionId ? this.db.versions.find((row) => row.id === state.lastSyncedVersionId) ?? null : null;
       const row = reviewRow(version, synced, state);
-      if (row) rows.push(row);
+      if (!row) continue;
+      const attempts = this.db.syncItems.filter((item) => item.noPesanan === version.noPesanan);
+      row.lastSyncError = syncFailureForVersion({
+        versionId: version.id,
+        versionCreatedAt: version.createdAt,
+        batchItems: attempts.map((item) => ({
+          at: item.createdAt,
+          status: item.status,
+          error: item.error,
+          versionId: item.versionId,
+        })),
+      });
+      rows.push(row);
     }
     return rows.sort((a, b) => b.day.localeCompare(a.day) || a.noPesanan.localeCompare(b.noPesanan));
   }

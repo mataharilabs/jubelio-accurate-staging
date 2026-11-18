@@ -1,6 +1,6 @@
-import { createCustomer, findCustomersByName, openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
+import { createCustomer, findCustomersByName, findSalesInvoiceByNumber, openDatabase, refreshTokens, saveSalesInvoice, tokenNeedsRefresh } from "@/lib/accurate/client";
 import { buyerName, missingCustomerScopes, normalizeCustomerKey, resolveBuyerCustomer } from "@/lib/accurate/customer";
-import { buildInvoice, invoiceUrl } from "@/lib/accurate/invoice";
+import { buildInvoice, invoiceNumberError, invoiceUrl } from "@/lib/accurate/invoice";
 import { getStore } from "@/lib/db";
 import type { SyncWrite } from "@/lib/db/store";
 import { accurateConfigured, accurateEnv, missingAccurateEnv, salesPushEnabled } from "@/lib/env";
@@ -78,8 +78,10 @@ export async function executeSync(nos: string[], by: string) {
       });
       continue;
     }
-    const action = item.state?.accurateId ? "update" : "create";
+    let action: "create" | "update" = item.state?.accurateId ? "update" : "create";
     try {
+      const numberProblem = invoiceNumberError(version.noPesanan);
+      if (numberProblem) throw new AppError(numberProblem);
       const name = buyerName(version.customerName);
       const cached = name ? await store.findAccurateCustomer(normalizeCustomerKey(name)) : null;
       if (name && !cached) {
@@ -102,11 +104,29 @@ export async function executeSync(nos: string[], by: string) {
       if (resolved.log) {
         await store.logSync({ actor: by, action: "sync", noPesanan: version.noPesanan, note: resolved.log });
       }
-      const draft = buildInvoice(version, settings, item.state?.accurateId, invoiceUrl(opened.host), {
+      let accurateId = item.state?.accurateId ?? null;
+      let reusedNumber: string | null = null;
+      if (!accurateId) {
+        const existing = await findSalesInvoiceByNumber(tokens.accessToken, opened.host, opened.session, version.noPesanan);
+        if (existing) {
+          accurateId = existing.id;
+          reusedNumber = existing.number;
+          action = "update";
+        }
+      }
+      const draft = buildInvoice(version, settings, accurateId, invoiceUrl(opened.host), {
         customerNo: resolved.customerNo,
         customerName: resolved.customerName,
       });
       if (draft.blockedReason) throw new AppError(draft.blockedReason);
+      if (reusedNumber && accurateId) {
+        await store.logSync({
+          actor: by,
+          action: "sync",
+          noPesanan: version.noPesanan,
+          note: `Faktur Accurate nomor ${reusedNumber} sudah ada (id ${accurateId}). Dipakai untuk update, bukan membuat duplikat.`,
+        });
+      }
       const saved = await saveSalesInvoice(tokens.accessToken, opened.host, opened.session, draft);
       writes.push({
         noPesanan: version.noPesanan,

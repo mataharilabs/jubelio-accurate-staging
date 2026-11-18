@@ -7,7 +7,17 @@ import {
   selectExactCustomer,
   type CustomerHit,
 } from "@/lib/accurate/customer";
-import { deleteInvoiceUrl, encodeBody, invoiceUrl, type InvoiceDraft } from "@/lib/accurate/invoice";
+import {
+  deleteInvoiceUrl,
+  encodeBody,
+  invoiceListQuery,
+  invoiceUrl,
+  readExistingInvoice,
+  SALES_INVOICE_DETAIL_PATH,
+  SALES_INVOICE_LIST_PATH,
+  type ExistingInvoice,
+  type InvoiceDraft,
+} from "@/lib/accurate/invoice";
 import type { AccurateTokens } from "@/lib/db/types";
 import { accurateEnv } from "@/lib/env";
 import { AppError } from "@/lib/errors";
@@ -166,9 +176,37 @@ export async function saveSalesInvoice(
     (error as AppError & { response?: AccurateEnvelope }).response = json;
     throw error;
   }
-  const number = json.r?.no || json.r?.number || null;
+  const number = json.r?.no || json.r?.number || draft.fields.number || null;
   const id = json.r?.id == null ? null : String(json.r.id);
   return { accurateId: id, accurateNumber: number, response: json };
+}
+
+function invoiceApiUrl(host: string, path: string, query: string): string {
+  return `${host.replace(/\/$/, "")}${path}?${query}`;
+}
+
+/**
+ * Find a sales invoice by its number.
+ * detail.do?number= is the documented alternative to id. The spec also marks id as required,
+ * so a rejection falls through to list.do filter.number.
+ */
+export async function findSalesInvoiceByNumber(
+  accessToken: string,
+  host: string,
+  session: string,
+  number: string,
+): Promise<ExistingInvoice | null> {
+  const detailUrl = invoiceApiUrl(host, SALES_INVOICE_DETAIL_PATH, `number=${encodeURIComponent(number)}`);
+  try {
+    const detail = await accurateGet(detailUrl, accessToken, session);
+    const hit = readExistingInvoice(detail, number);
+    if (hit) return hit;
+  } catch {
+    // detail.do may require id; list.do is the documented number filter.
+  }
+  const listUrl = invoiceApiUrl(host, SALES_INVOICE_LIST_PATH, invoiceListQuery(number));
+  const listed = await accurateGet(listUrl, accessToken, session);
+  return readExistingInvoice(listed, number);
 }
 
 export async function deleteSalesInvoice(

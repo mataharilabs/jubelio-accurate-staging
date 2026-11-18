@@ -5,17 +5,41 @@ import { ActionButton, reported, reportedOk, TableShell } from "@/components/ui/
 import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { AppMeta, SyncReviewRow } from "@/lib/db/types";
-import { accurateIntent, needsAccurateSync, syncReason } from "@/lib/domain/phase3";
+import { invoiceTotals } from "@/lib/accurate/invoice";
+import { accurateIntent, needsAccurateSync, SYNC_FAILED_REASON, syncReason } from "@/lib/domain/phase3";
 import { rp } from "@/lib/format";
 
 type LogRow = { at: string; actor: string | null; action: string; noPesanan: string; note: string };
 type SyncMeta = AppMeta & { salesPush?: boolean; accurateDatabaseId?: string };
 
-const REASONS = ["Belum pernah sync", "Data berubah", "Status jadi RETURNED", "Status jadi CANCELED"];
+const REASONS = ["Belum pernah sync", "Gagal sync", "Data berubah", "Status jadi RETURNED", "Status jadi CANCELED"];
 
 function stamp(value?: string | null) {
   if (!value) return "—";
   return value.slice(0, 16).replace("T", " ");
+}
+
+function InvoicePreview({ rows }: { rows: { noPesanan: string; total: number }[] }) {
+  if (!rows.length) return null;
+  return (
+    <div className="mt">
+      <div className="small"><b>Pratinjau faktur</b></div>
+      <div className="small mut">Nomor faktur sama dengan nomor pesanan. Total sudah termasuk PPN 11%. Accurate memecah DPP dan PPN di dalam faktur, dan total faktur tetap sama dengan total pesanan.</div>
+      <div className="tscroll" style={{ maxHeight: 200 }}>
+        <table className="small">
+          <thead><tr><th>No faktur</th><th className="n">Total termasuk PPN</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.noPesanan}>
+                <td>{row.noPesanan}</td>
+                <td className="n">{rp(row.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 export function SyncView() {
@@ -74,7 +98,7 @@ export function SyncView() {
       ppnReportDate: ppn,
       lossSibling: Boolean(row.current.lossSibling),
     });
-    return { row, intent, why: syncReason(row.category, everSynced) };
+    return { row, intent, why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)) };
   }), [rows, ppn]);
 
   const stores = [...new Set(rows.map((row) => row.current.storeName).filter(Boolean))].sort();
@@ -194,7 +218,10 @@ export function SyncView() {
                     <td data-label="Channel">{row.current.channel}</td>
                     <td data-label="Status">{row.current.status}{row.current.returnCase ? <div className="small mut">Case {row.current.returnCase}</div> : null}</td>
                     <td data-label="Revenue" className="n">{rp(row.current.revenue)}</td>
-                    <td data-label="Alasan"><span className="pill p-warn">{why}</span></td>
+                    <td data-label="Alasan">
+                      <span className={`pill ${why === SYNC_FAILED_REASON ? "p-bad" : "p-warn"}`} title={row.lastSyncError || undefined}>{why}</span>
+                      {why === SYNC_FAILED_REASON && row.lastSyncError ? <div className="small" style={{ maxWidth: 280, whiteSpace: "normal" }} title={row.lastSyncError}>{row.lastSyncError}</div> : null}
+                    </td>
                     <td data-label="Tutup buku">{closed ? <span className="pill p-gray">Sudah</span> : <span className="pill p-ok">Belum</span>}</td>
                     <td data-label="Tindakan"><span className={`pill ${intent.block ? "p-gray" : intent.label.startsWith("Hapus") ? "p-bad" : intent.label.startsWith("Buat Retur") || intent.label.startsWith("Ubah") ? "p-warn" : "p-info"}`}>{intent.label}</span></td>
                     <td data-label="Updated">{stamp(row.current.contentUpdatedAt)}</td>
@@ -237,6 +264,10 @@ export function SyncView() {
             {meta && salesPush && !databaseId ? <div className="warnbox mt">ID database Accurate kosong. Sync ditahan sampai database diisi di Koneksi Accurate.</div> : null}
             {meta && !salesPush ? <div className="small mut">Tidak ada data yang dikirim selama ACCURATE_SALES_PUSH belum enabled. Cancel yang sudah tutup buku tidak masuk tombol ini.</div> : null}
             {meta && !salesPush ? <div className="warnbox mt">Guard penjualan masih aktif. Accurate production tidak menerima penjualan, cancel, atau retur dari tombol ini.</div> : null}
+            <InvoicePreview rows={described.filter((item) => confirm.includes(item.row.noPesanan)).map((item) => ({
+              noPesanan: item.row.noPesanan,
+              total: invoiceTotals(item.row.current).net,
+            }))} />
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
               <button className="btn" onClick={() => setConfirm(null)}>Batal</button>
               <ActionButton className="btn pri" disabled={busy || (salesPush && !databaseId)} onClick={() => syncNow(confirm)}>Sync sekarang</ActionButton>
