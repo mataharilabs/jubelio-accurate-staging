@@ -1,9 +1,20 @@
 import { buyerName } from "@/lib/accurate/customer";
-import { accurateDate, formatDecimal } from "@/lib/format";
 import type { AppSettings, OrderVersion } from "@/lib/db/types";
+import { AppError } from "@/lib/errors";
+import { accurateDate, formatDecimal } from "@/lib/format";
 
 export const SALES_INVOICE_PATH = "/accurate/api/sales-invoice/save.do";
 export const SALES_INVOICE_DELETE_PATH = "/accurate/api/sales-invoice/delete.do";
+export const SALES_INVOICE_DETAIL_PATH = "/accurate/api/sales-invoice/detail.do";
+export const SALES_INVOICE_LIST_PATH = "/accurate/api/sales-invoice/list.do";
+
+/**
+ * sales-invoice/save.do `number` is a string and the public OpenAPI schema does not
+ * set maxLength (the sample "Halo Semua 123" is a generic placeholder). 50 is the
+ * transaction-number length Accurate Online's form has historically enforced.
+ * Longer order numbers are refused here so Accurate does not truncate or reject them.
+ */
+export const ACCURATE_INVOICE_NUMBER_MAX = 50;
 
 export type InvoiceDraft = {
   noPesanan: string;
@@ -50,6 +61,68 @@ export function encodeBody(fields: Record<string, string>): string {
   return params.toString();
 }
 
+/** Manual invoice number. Null when it can be sent as sales-invoice/save.do `number`. */
+export function invoiceNumberError(noPesanan: string): string | null {
+  const number = noPesanan ?? "";
+  if (!number.trim()) return "Nomor pesanan kosong, tidak bisa dipakai sebagai nomor faktur Accurate.";
+  if (number.length > ACCURATE_INVOICE_NUMBER_MAX) {
+    const shown = number.length > 80 ? `${number.slice(0, 80)}…` : number;
+    return `Nomor pesanan "${shown}" terlalu panjang untuk nomor faktur Accurate (${number.length} karakter, maksimal ${ACCURATE_INVOICE_NUMBER_MAX}).`;
+  }
+  return null;
+}
+
+/** list.do exact match on the transaction number. */
+export function invoiceListQuery(number: string): string {
+  const params = new URLSearchParams();
+  params.set("fields", "id,number");
+  params.set("sp.page", "1");
+  params.set("sp.pageSize", "20");
+  params.set("filter.number.op", "EQUAL");
+  params.set("filter.number.val", number);
+  return params.toString();
+}
+
+export type ExistingInvoice = { id: string; number: string };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+function invoiceRows(bucket: unknown): Record<string, unknown>[] {
+  if (Array.isArray(bucket)) {
+    return bucket.flatMap((item) => {
+      const record = asRecord(item);
+      return record ? [record] : [];
+    });
+  }
+  const record = asRecord(bucket);
+  if (!record) return [];
+  const nested = invoiceRows(record.d ?? record.list ?? record.data);
+  const self = record.id != null || record.number != null || record.no != null ? [record] : [];
+  return [...self, ...nested];
+}
+
+/** Read one invoice whose number matches exactly. Not-found is null; other Accurate errors throw. */
+export function readExistingInvoice(body: unknown, number: string): ExistingInvoice | null {
+  const json = asRecord(body) ?? {};
+  if (json.s === false) {
+    const detail = Array.isArray(json.d) ? json.d.map(String).join(" ") : text(json.d);
+    if (!detail || /not found|tidak ditemukan|no data|tidak ada/i.test(detail)) return null;
+    throw new AppError(detail);
+  }
+  for (const row of [...invoiceRows(json.d), ...invoiceRows(json.r)]) {
+    const id = text(row.id);
+    const found = text(row.number || row.no);
+    if (id && found === number) return { id, number };
+  }
+  return null;
+}
+
 export function invoiceUrl(host: string): string {
   return `${host.replace(/\/$/, "")}${SALES_INVOICE_PATH}`;
 }
@@ -58,8 +131,18 @@ export function deleteInvoiceUrl(host: string): string {
   return `${host.replace(/\/$/, "")}${SALES_INVOICE_DELETE_PATH}`;
 }
 
+/** Line totals already include PPN. Accurate's invoice total is this net. */
+export function invoiceTotals(version: OrderVersion): { gross: number; discount: number; net: number } {
+  const gross = version.lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0);
+  const discount = version.lines.reduce((sum, line) => sum + (line.unitDiskon ?? 0) * line.qty, 0);
+  return { gross, discount, net: gross - discount };
+}
+
 /**
  * One Accurate sales invoice for one order.
+ * `number` is the order number (no_pesanan), on create and on update.
+ * typeAutoNumber is omitted so Accurate does not apply an auto-number scheme.
+ * Prices are PPN-inclusive: taxable + inclusiveTax, and useTax1 on each line.
  * detailItem[n].unitPrice is the cleaned Unit Price (per piece).
  * itemCashDiscount = Unit Diskon × Qty.
  */
@@ -85,9 +168,15 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
 
   const fields: Record<string, string> = {};
   if (accurateId) fields.id = accurateId;
+  const numberError = invoiceNumberError(version.noPesanan);
+  if (numberError) reasons.push(numberError);
+  else fields.number = version.noPesanan;
   if (customer?.customerNo) fields.customerNo = customer.customerNo;
   fields.transDate = accurateDate(version.tanggal ? `${version.tanggal}Z` : null, version.day);
   fields.description = `Jubelio ${version.noPesanan}`.slice(0, 500);
+  // Marketplace prices already include 11% PPN. Do not send typeAutoNumber with a manual number.
+  fields.taxable = "true";
+  fields.inclusiveTax = "true";
   const branchName = location?.branchName || settings.defaultBranch;
   // Satu gudang Accurate (biasanya "Utama") lewat defaultWarehouse bila lokasi tidak punya mapping.
   const warehouseName = location?.warehouseName || settings.defaultWarehouse;
@@ -103,11 +192,13 @@ export function buildInvoice(version: OrderVersion, settings: AppSettings, accur
     fields[`detailItem[${index}].quantity`] = formatDecimal(line.qty, 4);
     fields[`detailItem[${index}].unitPrice`] = formatDecimal(line.unitPrice ?? 0);
     fields[`detailItem[${index}].itemCashDiscount`] = formatDecimal((line.unitDiskon ?? 0) * line.qty);
+    fields[`detailItem[${index}].useTax1`] = "true";
+    fields[`detailItem[${index}].useTax2`] = "false";
+    fields[`detailItem[${index}].useTax3`] = "false";
     if (warehouseName) fields[`detailItem[${index}].warehouseName`] = warehouseName;
   });
 
-  const gross = version.lines.reduce((sum, line) => sum + (line.subTotal ?? 0), 0);
-  const discount = version.lines.reduce((sum, line) => sum + (line.unitDiskon ?? 0) * line.qty, 0);
+  const { gross, discount } = invoiceTotals(version);
   const unique = [...new Set(reasons)];
   return {
     noPesanan: version.noPesanan,

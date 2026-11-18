@@ -149,7 +149,47 @@ export function needsAccurateSync(input: {
   return input.contentUpdatedAt > input.syncedAt;
 }
 
-export function syncReason(category: string, everSynced: boolean): string {
+export const SYNC_FAILED_REASON = "Gagal sync";
+
+const SYNC_SUCCESS = new Set(["berhasil", "tersinkron"]);
+const SYNC_FAILURE = new Set(["gagal"]);
+
+export type SyncAttempt = {
+  at: string;
+  status: string;
+  error?: string | null;
+  versionId?: string | null;
+};
+
+function attemptTime(value: string): number {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Latest failed attempt for this version, until a later success.
+ * sync_batch_items are matched on version id. order_syncs has no version, so only
+ * attempts at or after this version was created are counted.
+ */
+export function syncFailureForVersion(input: {
+  versionId: string;
+  versionCreatedAt?: string | null;
+  batchItems: SyncAttempt[];
+  orderSyncs?: SyncAttempt[];
+}): string | null {
+  const createdAt = attemptTime(input.versionCreatedAt ?? "");
+  const fromBatch = input.batchItems.filter((item) => item.versionId === input.versionId);
+  const fromLegacy = (input.orderSyncs ?? []).filter((item) => !createdAt || attemptTime(item.at) >= createdAt);
+  const attempts = [...fromBatch, ...fromLegacy]
+    .filter((item) => SYNC_SUCCESS.has(item.status) || SYNC_FAILURE.has(item.status))
+    .sort((a, b) => attemptTime(b.at) - attemptTime(a.at));
+  const latest = attempts[0];
+  if (!latest || !SYNC_FAILURE.has(latest.status)) return null;
+  return latest.error?.trim() || "Sync gagal.";
+}
+
+export function syncReason(category: string, everSynced: boolean, failed = false): string {
+  if (failed) return SYNC_FAILED_REASON;
   if (!everSynced || category === "Baru") return "Belum pernah sync";
   if (category === "Returned") return "Status jadi RETURNED";
   if (category === "Batal") return "Status jadi CANCELED";

@@ -3,7 +3,7 @@ import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { bucketLabel } from "@/lib/domain/aggregate";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
-import { buildReturnVersions, canSoftDeleteOrder } from "@/lib/domain/phase3";
+import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion, type SyncAttempt } from "@/lib/domain/phase3";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
@@ -107,6 +107,22 @@ async function selectIn(sb: SupabaseClient, table: string, column: string, value
     const slice = unique.slice(i, i + 80);
     const { data, error } = await sb.from(table).select("*").in(column, slice);
     if (error) explain(error, action);
+    rows.push(...((data ?? []) as Row[]));
+  }
+  return rows;
+}
+
+/** Legacy order_syncs failures. Missing table is ignored; this app writes sync_batch_items. */
+async function orderSyncRows(sb: SupabaseClient, nos: string[]): Promise<Row[]> {
+  const unique = [...new Set(nos.filter(Boolean))];
+  const rows: Row[] = [];
+  for (let i = 0; i < unique.length; i += 80) {
+    const slice = unique.slice(i, i + 80);
+    const { data, error } = await sb.from("order_syncs").select("no_pesanan,status,error,updated_at,synced_at").in("no_pesanan", slice);
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205" || /order_syncs|does not exist|schema cache/i.test(error.message ?? "")) return rows;
+      explain(error, "membaca order sync");
+    }
     rows.push(...((data ?? []) as Row[]));
   }
   return rows;
@@ -672,13 +688,40 @@ export class SupabaseStore implements DataStore {
     const missing = syncedIds.filter((id) => !versions.some((version) => version.id === id));
     const extra = missing.length ? await this.hydrate(await selectIn(this.sb, "order_versions", "id", missing, "membaca versi tersinkron")) : [];
     const byId = new Map([...versions, ...extra].map((version) => [version.id, version]));
+    const versionIds = versions.map((version) => version.id);
+    const batchRows = versionIds.length
+      ? await selectIn(this.sb, "sync_batch_items", "version_id", versionIds, "membaca kegagalan sync")
+      : [];
+    const legacyRows = await orderSyncRows(this.sb, nos);
+    const batchByVersion = new Map<string, SyncAttempt[]>();
+    for (const item of batchRows) {
+      const versionId = strOrNull(item.version_id);
+      if (!versionId) continue;
+      const list = batchByVersion.get(versionId) ?? [];
+      list.push({ at: str(item.created_at), status: str(item.status), error: strOrNull(item.error), versionId });
+      batchByVersion.set(versionId, list);
+    }
+    const legacyByOrder = new Map<string, SyncAttempt[]>();
+    for (const item of legacyRows) {
+      const noPesanan = str(item.no_pesanan);
+      const list = legacyByOrder.get(noPesanan) ?? [];
+      list.push({ at: str(item.updated_at || item.synced_at), status: str(item.status), error: strOrNull(item.error) });
+      legacyByOrder.set(noPesanan, list);
+    }
     const rows: SyncReviewRow[] = [];
     for (const version of versions) {
       const stateRow = stateRows.find((row) => str(row.no_pesanan) === version.noPesanan);
       const state = stateRow ? stateFrom(stateRow) : null;
       const synced = state?.lastSyncedVersionId ? byId.get(state.lastSyncedVersionId) ?? null : null;
       const row = reviewRow(version, synced, state);
-      if (row) rows.push(row);
+      if (!row) continue;
+      row.lastSyncError = syncFailureForVersion({
+        versionId: version.id,
+        versionCreatedAt: version.createdAt,
+        batchItems: batchByVersion.get(version.id) ?? [],
+        orderSyncs: legacyByOrder.get(version.noPesanan) ?? [],
+      });
+      rows.push(row);
     }
     return rows.sort((a, b) => b.day.localeCompare(a.day) || a.noPesanan.localeCompare(b.noPesanan));
   }

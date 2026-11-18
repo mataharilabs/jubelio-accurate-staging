@@ -17,6 +17,9 @@ import {
   previousEqualWindow,
   salesPushEnabled,
   shouldRefreshContentUpdated,
+  SYNC_FAILED_REASON,
+  syncFailureForVersion,
+  syncReason,
   yesterdayWib,
 } from "@/lib/domain/phase3";
 
@@ -104,6 +107,40 @@ describe("phase 3 rules", () => {
     expect(accurateIntent({ status: "CANCELED", everSynced: true, orderDay: "2026-09-01", ppnReportDate: "2026-09-30" }).block).toBe(true);
     expect(accurateIntent({ status: "COMPLETED", everSynced: false, orderDay: "2026-11-02", lossSibling: true }).label).toBe("Buat penjualan (Barang Hilang)");
     expect(accurateIntent({ status: "COMPLETED", everSynced: false, orderDay: "2026-11-02" }).label).toBe("Buat penjualan");
+  });
+
+  it("shows a failed sync for the current version until a later success", () => {
+    expect(syncReason("Baru", false, true)).toBe(SYNC_FAILED_REASON);
+    expect(syncReason("Baru", false, false)).toBe("Belum pernah sync");
+    expect(syncReason("Berubah", true, false)).toBe("Data berubah");
+    const versionId = "v-now";
+    const failed = syncFailureForVersion({
+      versionId,
+      versionCreatedAt: "2026-11-16T00:00:00.000Z",
+      batchItems: [{ versionId, at: "2026-11-16T01:00:00.000Z", status: "gagal", error: "Pelanggan tidak ada" }],
+      orderSyncs: [{ at: "2026-11-15T01:00:00.000Z", status: "gagal", error: "lama" }],
+    });
+    expect(failed).toBe("Pelanggan tidak ada");
+    expect(syncFailureForVersion({
+      versionId,
+      versionCreatedAt: "2026-11-16T00:00:00.000Z",
+      batchItems: [
+        { versionId, at: "2026-11-16T01:00:00.000Z", status: "gagal", error: "gagal dulu" },
+        { versionId, at: "2026-11-16T02:00:00.000Z", status: "berhasil", error: null },
+      ],
+    })).toBeNull();
+    expect(syncFailureForVersion({
+      versionId,
+      versionCreatedAt: "2026-11-16T00:00:00.000Z",
+      batchItems: [{ versionId: "v-old", at: "2026-11-16T03:00:00.000Z", status: "gagal", error: "versi lama" }],
+      orderSyncs: [{ at: "2026-11-16T04:00:00.000Z", status: "gagal", error: "Nomor sudah dipakai" }],
+    })).toBe("Nomor sudah dipakai");
+    expect(syncFailureForVersion({
+      versionId,
+      versionCreatedAt: "2026-11-16T00:00:00.000Z",
+      batchItems: [{ versionId, at: "2026-11-16T01:00:00.000Z", status: "gagal", error: "gagal" }],
+      orderSyncs: [{ at: "2026-11-16T05:00:00.000Z", status: "tersinkron", error: null }],
+    })).toBeNull();
   });
 
   it("keeps the Accurate queue to rows newer than the last sync", () => {
