@@ -235,7 +235,7 @@ export type DashboardQuery = {
   categories?: string[];
 };
 
-export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number; brand?: string; category?: string; name?: string; miss?: boolean };
+export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number; marketing?: number; brand?: string; category?: string; name?: string; miss?: boolean };
 export type ProductRow = GroupRow & { sku: string; name: string; share: number };
 export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number; gross?: number; hpp?: number; profit?: number };
 
