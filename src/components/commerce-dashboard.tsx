@@ -8,6 +8,7 @@ import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
 import { dayShort } from "@/lib/domain/aggregate";
+import { storeProfit } from "@/lib/marketing/allocate";
 import { currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
 import { numId, rp, rpCompact } from "@/lib/format";
 
@@ -20,6 +21,11 @@ const METRIC_LABEL: Record<Metric, string> = {
   gross: "Penjualan Kotor",
   profit: "Profit",
 };
+
+function trendValue(row: { gross?: number; net?: number; profit?: number; marketing?: number; hpp?: number } | undefined, metric: Metric, storeMode: boolean): number {
+  if (storeMode && metric === "profit") return storeProfit(row?.net ?? 0, row?.hpp ?? 0, 0, row?.marketing ?? 0);
+  return metricOf(row, metric);
+}
 
 function metricOf(row: { gross?: number; net?: number; profit?: number } | undefined, metric: Metric): number {
   if (!row) return 0;
@@ -147,7 +153,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           <b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : " (Marketing = 0)"}. Default periode: <b>bulan berjalan</b>. Pesanan berstatus data <b>Dihapus</b> tidak dihitung.
         </div>
         <div className="actions">
-          <ActionButton className="btn" onClick={() => downloadExport(mode === "toko" ? "dashboard-toko.xlsx" : "dashboard-produk.xlsx", { target: "dashboard", format: "xlsx", query }).then(() => reportedOk("Ekspor selesai.")).catch((err: Error) => setError(reported(err, "Ekspor gagal.")))}>Export</ActionButton>
+          <ActionButton className="btn" onClick={() => downloadExport(mode === "toko" ? "dashboard-toko.xlsx" : "dashboard-produk.xlsx", { target: "dashboard", format: "xlsx", query, mode }).then(() => reportedOk("Ekspor selesai.")).catch((err: Error) => setError(reported(err, "Ekspor gagal.")))}>Export</ActionButton>
         </div>
       </div>
       <div className="filterbar">
@@ -230,8 +236,8 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <BarChart
               labels={(report?.trend ?? []).map((row) => dayShort(row.bucket))}
               series={[
-                ...(compare && previous ? [{ name: "Pembanding", values: align(previous.trend, report?.trend ?? []).map((row) => metricOf(row, metric)), color: "#c9cde0" }] : []),
-                { name: METRIC_LABEL[metric], values: (report?.trend ?? []).map((row) => metricOf(row, metric)), color: "#4f46e5" },
+                ...(compare && previous ? [{ name: "Pembanding", values: align(previous.trend, report?.trend ?? []).map((row) => trendValue(row, metric, mode === "toko")), color: "#c9cde0" }] : []),
+                { name: METRIC_LABEL[metric], values: (report?.trend ?? []).map((row) => trendValue(row, metric, mode === "toko")), color: "#4f46e5" },
               ]}
             />
           </div>

@@ -49,7 +49,9 @@ export function exportCsv(rows: Record<string, string | number | null>[]): strin
   if (!rows.length) return "";
   const headers = Object.keys(rows[0]);
   const escape = (value: string | number | null) => {
-    const text = value == null ? "" : String(value);
+    if (typeof value === "number") return String(value);
+    let text = value == null ? "" : String(value);
+    if (/^[=+\-@]/.test(text)) text = `'${text}`;
     return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return [headers.join(","), ...rows.map((row) => headers.map((header) => escape(row[header])).join(","))].join("\n");

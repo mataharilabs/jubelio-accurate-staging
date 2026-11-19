@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, track } from "@/lib/api-client";
 import { rp, rpCompact } from "@/lib/format";
 import { formatPeriod, monthLabel, sameCalendarMonth, wibMonth } from "@/lib/marketing/dates";
@@ -210,18 +210,24 @@ export function MarketingView() {
   const [uploadStore, setUploadStore] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const columns = useColumns();
+  const loadGen = useRef(0);
+  const previewGen = useRef(0);
+  const shownPreviewKey = useRef("");
 
   async function load(nextMonth = month, nextStatus = status) {
+    const gen = ++loadGen.current;
     setLoading(true);
     try {
       const result = await api<{ rows: MarketingRecord[]; stores: string[] }>(`/api/marketing?month=${nextMonth}&status=${nextStatus}`);
+      if (gen !== loadGen.current) return;
       setRows(result.rows);
       setStores(result.stores);
       setError(null);
     } catch (err) {
+      if (gen !== loadGen.current) return;
       setError(reported(err, "Gagal memuat marketing spending."));
     } finally {
-      setLoading(false);
+      if (gen === loadGen.current) setLoading(false);
     }
   }
 
@@ -258,18 +264,29 @@ export function MarketingView() {
   const pageIds = page.shown.filter((row) => !row.deletedAt).map((row) => row.id);
 
   function resetUpload() {
+    previewGen.current += 1;
+    shownPreviewKey.current = "";
     setUploadOpen(false);
     setStep(1);
     setFile(null);
     setPreview(null);
   }
 
-  async function requestPreview(nextFile: File, nextPlatform: string, nextStore: string) {
+  function uploadKey(nextFile: File, nextPlatform: string, nextStore: string) {
+    return `${nextFile.name}\u0000${nextFile.size}\u0000${nextFile.lastModified}\u0000${nextPlatform}\u0000${nextStore}`;
+  }
+
+  async function requestPreview(nextFile: File, nextPlatform: string, nextStore: string): Promise<Preview | null> {
+    const gen = ++previewGen.current;
+    const key = uploadKey(nextFile, nextPlatform, nextStore);
     const form = new FormData();
     form.set("file", nextFile);
     form.set("platform", nextPlatform);
     if (nextStore) form.set("store", nextStore);
-    return api<Preview>("/api/marketing/preview", { method: "POST", body: form });
+    const result = await api<Preview>("/api/marketing/preview", { method: "POST", body: form });
+    if (gen !== previewGen.current) return null;
+    shownPreviewKey.current = key;
+    return result;
   }
 
   async function chooseFile(next: File) {
@@ -281,6 +298,7 @@ export function MarketingView() {
     if (!uploadStore && initial) setUploadStore(initial);
     try {
       const result = await requestPreview(next, platform, initial);
+      if (!result) return;
       setPreview(result);
       if (!initial && result.storeMatch) setUploadStore(result.storeMatch);
     } catch (err) {
@@ -295,9 +313,12 @@ export function MarketingView() {
     }
     try {
       const result = await requestPreview(file, platform, uploadStore);
+      if (!result) return;
       setPreview(result);
+      const chosenStore = uploadStore || result.storeMatch || "";
       if (!uploadStore && result.storeMatch) setUploadStore(result.storeMatch);
-      if (result.needsStore && !(uploadStore || result.storeMatch)) {
+      shownPreviewKey.current = uploadKey(file, platform, chosenStore);
+      if (result.needsStore && !chosenStore) {
         reported(new Error("Pilih toko untuk semua baris dalam file ini."), "Pilih toko.");
         return;
       }
@@ -309,6 +330,10 @@ export function MarketingView() {
 
   async function commit(overwrite: boolean) {
     if (!file) return;
+    if (shownPreviewKey.current !== uploadKey(file, platform, uploadStore)) {
+      reported(new Error("Pratinjau tidak lagi cocok dengan file ini. Ulangi pratinjau."), "Ulangi pratinjau.");
+      return;
+    }
     try {
       const form = new FormData();
       form.set("file", file);
@@ -381,6 +406,11 @@ export function MarketingView() {
     await saveBlob(response, `marketing-spending-${month}.${format}`);
     reportedOk("Ekspor selesai.");
     setExportOpen(false);
+  }
+
+  function editManual(patch: Partial<Manual>) {
+    setManual((current) => ({ ...current, ...patch }));
+    setManualConflict("");
   }
 
   const manualCross = Boolean(manual.periodStart && manual.periodEnd && !sameCalendarMonth(manual.periodStart, manual.periodEnd));
@@ -573,17 +603,17 @@ export function MarketingView() {
           <>
             <p className="small mut">Unggah report mingguan dari Shopee Ads, TikTok Ads, Meta Ads, atau CPAS. Untuk Lazada, Blibli, dan lainnya, pakai template Excel standar.</p>
             <div className="f"><label>Platform iklan</label>
-              <select aria-label="Platform iklan" value={platform} onChange={(event) => { setPlatform(event.target.value); setPreview(null); const remembered = window.localStorage.getItem(`marketing:store:${event.target.value}`) ?? ""; setUploadStore(stores.includes(remembered) ? remembered : ""); }}>
+              <select aria-label="Platform iklan" value={platform} onChange={(event) => { previewGen.current += 1; shownPreviewKey.current = ""; setPlatform(event.target.value); setPreview(null); const remembered = window.localStorage.getItem(`marketing:store:${event.target.value}`) ?? ""; setUploadStore(stores.includes(remembered) ? remembered : ""); }}>
                 {UPLOAD_PLATFORMS.map((item) => <option key={item}>{item}</option>)}
               </select>
             </div>
             <label className="drop mt">
-              <input hidden type="file" accept=".csv,.xlsx,.xls" aria-label="File laporan" onChange={(event) => { const next = event.target.files?.[0]; event.target.value = ""; if (next) chooseFile(next).catch(() => undefined); }} />
+              <input className="file-pick" type="file" accept=".csv,.xlsx,.xls" aria-label="File laporan" onChange={(event) => { const next = event.target.files?.[0]; event.target.value = ""; if (next) chooseFile(next).catch(() => undefined); }} />
               {file ? <><b>{file.name}</b><div className="small mut">Klik untuk ganti file</div></> : <><b>Pilih file laporan</b><div className="small mut">CSV atau Excel</div></>}
             </label>
             {["Shopee Ads", "TikTok Ads", "Meta Ads", "CPAS"].includes(platform) ? (
               <div className="f mt"><label>Toko{platform === "Shopee Ads" ? "" : " *"}</label>
-                <select aria-label="Toko unggahan" value={uploadStore} onChange={(event) => setUploadStore(event.target.value)}>
+                <select aria-label="Toko unggahan" value={uploadStore} onChange={(event) => { previewGen.current += 1; shownPreviewKey.current = ""; setPreview(null); setUploadStore(event.target.value); }}>
                   <option value="">— Pilih toko —</option>
                   {stores.map((item) => <option key={item}>{item}</option>)}
                 </select>
@@ -602,13 +632,13 @@ export function MarketingView() {
         ) : preview ? (
           <>
             <p className="small mut">Periksa baris hasil baca sebelum disimpan. Spend tidak ditambah PPN.</p>
-            {preview.crossesMonth ? <div className="badbox"><b>Periode ditolak — lintas bulan</b><div style={{ marginTop: 6 }}>{preview.monthMessage}</div></div> : null}
+            {preview.monthMessage ? <div className="badbox"><b>{preview.crossesMonth ? "Periode ditolak — lintas bulan" : "Upload ditolak"}</b><div style={{ marginTop: 6 }}>{preview.monthMessage}</div></div> : null}
             {!preview.crossesMonth && preview.duplicates.length ? (
               <div className="warnbox"><b>Data duplikat terdeteksi</b><div style={{ marginTop: 6 }}>{preview.duplicateMessage}</div></div>
             ) : null}
             {preview.note ? <div className="note" style={{ marginTop: 8 }}>{preview.note}</div> : null}
             {preview.unresolved.length && preview.kind === "template" ? <div className="warnbox" style={{ marginTop: 8 }}>Toko tidak dikenali: {preview.unresolved.join(", ")}. Samakan dengan daftar toko, lalu unggah lagi.</div> : null}
-            {!preview.crossesMonth ? (
+            {!preview.monthMessage ? (
               <>
                 <div className="kv">
                   <span>Platform</span><b><span className={platformClass(preview.platform)}>{preview.platform}</span></b>
@@ -643,10 +673,10 @@ export function MarketingView() {
             ) : null}
             <div className="modal-actions">
               <button className="btn" onClick={() => setStep(1)}>← Kembali</button>
-              {preview.crossesMonth ? <button className="btn" onClick={resetUpload}>Tutup</button> : null}
-              {!preview.crossesMonth && preview.duplicates.length ? <button className="btn" onClick={resetUpload}>Batal</button> : null}
-              {!preview.crossesMonth && preview.duplicates.length ? <ActionButton className="btn bad" onClick={() => commit(true)}>Timpa data lama</ActionButton> : null}
-              {!preview.crossesMonth && !preview.duplicates.length && preview.validCount > 0 && !preview.unresolved.length ? <ActionButton className="btn pri" onClick={() => commit(false)}>Simpan {preview.validCount} baris</ActionButton> : null}
+              {preview.monthMessage ? <button className="btn" onClick={resetUpload}>Tutup</button> : null}
+              {!preview.monthMessage && preview.duplicates.length ? <button className="btn" onClick={resetUpload}>Batal</button> : null}
+              {!preview.monthMessage && preview.duplicates.length && preview.validCount > 0 && !preview.unresolved.length ? <ActionButton className="btn bad" onClick={() => commit(true)}>Timpa data lama</ActionButton> : null}
+              {!preview.monthMessage && !preview.duplicates.length && preview.validCount > 0 && !preview.unresolved.length ? <ActionButton className="btn pri" onClick={() => commit(false)}>Simpan {preview.validCount} baris</ActionButton> : null}
             </div>
           </>
         ) : <div className="note"><Spinner /> Memuat pratinjau…</div>}
@@ -656,30 +686,30 @@ export function MarketingView() {
         <h2>Tambah spending</h2>
         <p className="small mut">Input manual untuk platform yang tidak punya report (Lazada, Blibli, dan lainnya), atau koreksi satu baris.</p>
         <div className="grid g2">
-          <div className="f"><label>Tanggal mulai</label><input type="date" value={manual.periodStart} onChange={(event) => setManual({ ...manual, periodStart: event.target.value })} /></div>
-          <div className="f"><label>Tanggal selesai</label><input type="date" value={manual.periodEnd} onChange={(event) => setManual({ ...manual, periodEnd: event.target.value })} /></div>
+          <div className="f"><label>Tanggal mulai</label><input type="date" value={manual.periodStart} onChange={(event) => editManual({ periodStart: event.target.value })} /></div>
+          <div className="f"><label>Tanggal selesai</label><input type="date" value={manual.periodEnd} onChange={(event) => editManual({ periodEnd: event.target.value })} /></div>
         </div>
         <div className="grid g2 mt">
           <div className="f"><label>Platform iklan</label>
-            <select aria-label="Platform manual" value={manual.platform} onChange={(event) => setManual({ ...manual, platform: event.target.value })}>
+            <select aria-label="Platform manual" value={manual.platform} onChange={(event) => editManual({ platform: event.target.value })}>
               {PLATFORMS.map((item) => <option key={item}>{item}</option>)}
             </select>
           </div>
           <div className="f"><label>Toko</label>
-            <select aria-label="Toko manual" value={manual.storeName} onChange={(event) => setManual({ ...manual, storeName: event.target.value })}>
+            <select aria-label="Toko manual" value={manual.storeName} onChange={(event) => editManual({ storeName: event.target.value })}>
               <option value="">— Pilih toko —</option>
               {stores.map((item) => <option key={item}>{item}</option>)}
             </select>
           </div>
         </div>
-        <div className="f mt"><label>Nama kampanye / iklan (opsional)</label><input value={manual.campaign} onChange={(event) => setManual({ ...manual, campaign: event.target.value })} /></div>
+        <div className="f mt"><label>Nama kampanye / iklan (opsional)</label><input value={manual.campaign} onChange={(event) => editManual({ campaign: event.target.value })} /></div>
         <div className="grid g2 mt">
-          <div className="f"><label>Spend (Rp)</label><input inputMode="decimal" placeholder="Mis. 250000" value={manual.spend} onChange={(event) => setManual({ ...manual, spend: event.target.value })} /></div>
-          <div className="f"><label>Impresi (opsional)</label><input inputMode="numeric" value={manual.impressions} onChange={(event) => setManual({ ...manual, impressions: event.target.value })} /></div>
-          <div className="f"><label>Klik (opsional)</label><input inputMode="numeric" value={manual.clicks} onChange={(event) => setManual({ ...manual, clicks: event.target.value })} /></div>
-          <div className="f"><label>Pesanan dari iklan (opsional)</label><input inputMode="numeric" value={manual.orders} onChange={(event) => setManual({ ...manual, orders: event.target.value })} /></div>
+          <div className="f"><label>Spend (Rp)</label><input inputMode="decimal" placeholder="Mis. 250000" value={manual.spend} onChange={(event) => editManual({ spend: event.target.value })} /></div>
+          <div className="f"><label>Impresi (opsional)</label><input inputMode="numeric" value={manual.impressions} onChange={(event) => editManual({ impressions: event.target.value })} /></div>
+          <div className="f"><label>Klik (opsional)</label><input inputMode="numeric" value={manual.clicks} onChange={(event) => editManual({ clicks: event.target.value })} /></div>
+          <div className="f"><label>Pesanan dari iklan (opsional)</label><input inputMode="numeric" value={manual.orders} onChange={(event) => editManual({ orders: event.target.value })} /></div>
         </div>
-        <div className="f mt"><label>Omzet dari iklan (Rp) (opsional)</label><input inputMode="decimal" value={manual.adsRevenue} onChange={(event) => setManual({ ...manual, adsRevenue: event.target.value })} /></div>
+        <div className="f mt"><label>Omzet dari iklan (Rp) (opsional)</label><input inputMode="decimal" value={manual.adsRevenue} onChange={(event) => editManual({ adsRevenue: event.target.value })} /></div>
         {manualCross ? <div className="badbox mt">Tanggal mulai dan selesai harus dalam bulan yang sama.</div> : <div className="note mt">Tanggal mulai dan selesai harus dalam bulan yang sama. Spend diisi apa adanya (tidak ditambah PPN). Sumber akan tercatat sebagai Manual.</div>}
         {manualConflict ? <div className="warnbox mt">{manualConflict}</div> : null}
         <div className="modal-actions">

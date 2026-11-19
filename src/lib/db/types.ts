@@ -241,7 +241,7 @@ export type GeoRow = { key: string; net: number; orders: number; qty: number; sh
 
 export type DashboardReport = {
   kpis: { gross: number; disc: number; net: number; orders: number; qty: number; aov: number; days: number; hpp: number; fee: number; marketing: number; profit: number; missingSkus: number; missingSkuSample?: string[] };
-  trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; profit?: number }[];
+  trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; profit?: number; marketing?: number }[];
   channels: GroupRow[];
   stores: GroupRow[];
   products: ProductRow[];

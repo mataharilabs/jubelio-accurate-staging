@@ -49,6 +49,7 @@ export async function POST(request: Request) {
       allowLargePdf?: boolean;
       days?: string[];
       metric?: "net" | "gross";
+      mode?: "toko" | "produk";
     };
     const permission: Permission = body.target === "orders" ? "orders.export" : body.target === "dashboard" ? "dashboard.export" : "sync.view";
     await requirePermission(permission);
@@ -95,7 +96,7 @@ export async function POST(request: Request) {
         })))
         : undefined;
       const subtitle = `${base.from ?? "awal"} s/d ${base.to ?? "akhir"} · ${body.metric === "gross" ? "Penjualan kotor" : "Revenue bersih"}`;
-      buffer = format === "pdf" ? await pdfDashboard(report, subtitle, body.metric === "gross" ? "gross" : "net") : dashboardSheet(report, compare);
+      buffer = format === "pdf" ? await pdfDashboard(report, subtitle, body.metric === "gross" ? "gross" : "net") : dashboardSheet(report, compare, body.mode === "toko" ? "toko" : "produk");
       filename = "dashboard";
     }
     const type = format === "pdf"

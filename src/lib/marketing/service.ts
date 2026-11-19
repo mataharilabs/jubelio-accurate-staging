@@ -4,6 +4,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { eachPage } from "@/lib/db/supabase-paging";
 import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
+import { planDelete, planSave, type SpendFile } from "@/lib/marketing/apply";
 import { formatPeriod, monthEnd, sameCalendarMonth } from "@/lib/marketing/dates";
 import { duplicateGroups, type Span } from "@/lib/marketing/overlap";
 import { isPlatform, parseUpload } from "@/lib/marketing/parse";
@@ -19,7 +20,7 @@ export class ConflictError extends AppError {
   }
 }
 
-type FileDb = { rows: MarketingRecord[]; audit: unknown[] };
+type FileDb = SpendFile;
 
 type Resolved = SpendDraft & { storeName: string };
 
@@ -39,12 +40,23 @@ function filePath(): string {
 }
 
 function readDb(): FileDb {
+  let text: string;
   try {
-    const parsed = JSON.parse(readFileSync(filePath(), "utf8")) as FileDb;
-    return { rows: parsed.rows ?? [], audit: parsed.audit ?? [] };
-  } catch {
-    return { rows: [], audit: [] };
+    text = readFileSync(filePath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { rows: [], audit: [] };
+    throw error;
   }
+  const parsed = JSON.parse(text) as FileDb;
+  return { rows: parsed.rows ?? [], audit: parsed.audit ?? [] };
+}
+
+let fileQueue: Promise<unknown> = Promise.resolve();
+
+function withFileLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = fileQueue.then(work, work);
+  fileQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 function writeDb(db: FileDb) {
@@ -56,14 +68,16 @@ function client(): SupabaseClient {
   return createClient(supabaseUrl(), supabaseServiceKey(), { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function missingSchema(error: { message?: string; code?: string } | null): boolean {
-  const text = error?.message ?? "";
-  return error?.code === "42P01" || error?.code === "PGRST205" || /marketing_spend|does not exist|schema cache/i.test(text);
-}
-
 function schemaOrFail(error: { message?: string; code?: string } | null, action: string): never {
-  if (missingSchema(error)) throw new AppError("Jalankan supabase/migrations/0013_marketing_spend.sql di SQL Editor.");
-  throw new AppError(error?.message || `Gagal ${action}.`);
+  const code = error?.code ?? "";
+  const text = error?.message ?? "";
+  if (code === "42501") throw new AppError("Tidak punya izin untuk marketing spending.", 403);
+  if (code === "42P01" || code === "PGRST205") throw new AppError("Jalankan supabase/migrations/0013_marketing_spend.sql di SQL Editor.");
+  if (code === "PGRST202" || /marketing_apply|could not find the function/i.test(text)) {
+    throw new AppError("Jalankan supabase/migrations/0014_marketing_apply.sql di SQL Editor.");
+  }
+  if (/does not exist|schema cache/i.test(text)) throw new AppError("Jalankan supabase/migrations/0014_marketing_apply.sql di SQL Editor.");
+  throw new AppError(text || `Gagal ${action}.`);
 }
 
 function num(value: unknown, fallback = 0): number {
@@ -99,30 +113,6 @@ function fromRemote(row: Record<string, unknown>): MarketingRecord {
     createdAt: String(row.created_at ?? ""),
     deletedAt: row.deleted_at ? String(row.deleted_at) : null,
     deletedBy: row.deleted_by ? String(row.deleted_by) : null,
-  };
-}
-
-function toRemote(row: MarketingRecord) {
-  return {
-    id: row.id,
-    upload_id: row.uploadId,
-    line_no: row.lineNo,
-    period_start: row.periodStart,
-    period_end: row.periodEnd,
-    platform: row.platform,
-    store_name: row.storeName,
-    campaign: row.campaign,
-    spend: row.spend,
-    impressions: row.impressions,
-    clicks: row.clicks,
-    orders: row.orders,
-    ads_revenue: row.adsRevenue,
-    source: row.source,
-    source_file: row.sourceFile,
-    created_by: row.createdBy,
-    created_at: row.createdAt,
-    deleted_at: row.deletedAt,
-    deleted_by: row.deletedBy,
   };
 }
 
@@ -168,7 +158,7 @@ export async function listSpendStores(): Promise<string[]> {
     const rows = await loadRows("all");
     return [...new Set(rows.map((row) => row.storeName).filter(Boolean))];
   } catch (error) {
-    if (error instanceof AppError && /0013_marketing_spend/.test(error.message)) return [];
+    if (error instanceof AppError && /0013_marketing_spend|0014_marketing_apply/.test(error.message)) return [];
     throw error;
   }
 }
@@ -178,7 +168,7 @@ export async function listActiveSlices(): Promise<{ storeName: string; periodSta
     const rows = await loadRows("active");
     return rows.map((row) => ({ storeName: row.storeName, periodStart: row.periodStart, periodEnd: row.periodEnd, spend: row.spend }));
   } catch (error) {
-    if (error instanceof AppError && /0013_marketing_spend/.test(error.message)) return [];
+    if (error instanceof AppError && /0013_marketing_spend|0014_marketing_apply/.test(error.message)) return [];
     throw error;
   }
 }
@@ -235,70 +225,6 @@ export async function prepareUpload(input: { filename: string; buffer: Buffer; p
   return { source, filename: input.filename, parsed, rows, unresolved, storeMatch, storeAmbiguous, duplicates };
 }
 
-async function insertRows(rows: MarketingRecord[]) {
-  if (!rows.length) return;
-  if (!supabaseConfigured()) {
-    const db = readDb();
-    db.rows.push(...rows);
-    writeDb(db);
-    return;
-  }
-  for (let index = 0; index < rows.length; index += 200) {
-    const { error } = await client().from("marketing_spend").insert(rows.slice(index, index + 200).map(toRemote));
-    if (error) schemaOrFail(error, "menyimpan marketing spending");
-  }
-}
-
-async function markDeleted(ids: string[], actor: string) {
-  if (!ids.length) return;
-  const now = new Date().toISOString();
-  if (!supabaseConfigured()) {
-    const db = readDb();
-    for (const row of db.rows) {
-      if (ids.includes(row.id) && !row.deletedAt) {
-        row.deletedAt = now;
-        row.deletedBy = actor;
-      }
-    }
-    writeDb(db);
-    return;
-  }
-  for (let index = 0; index < ids.length; index += 200) {
-    const chunk = ids.slice(index, index + 200);
-    const { error } = await client().from("marketing_spend").update({ deleted_at: now, deleted_by: actor }).in("id", chunk);
-    if (error) schemaOrFail(error, "menutup baris lama");
-  }
-}
-
-async function writeSpendAudit(entries: { spendId: string | null; uploadId: string | null; action: "create" | "overwrite" | "delete"; actor: string; platform: string; storeName: string; periodStart: string; periodEnd: string; snapshot: unknown }[]) {
-  if (!entries.length) return;
-  const now = new Date().toISOString();
-  if (!supabaseConfigured()) {
-    const db = readDb();
-    db.audit.unshift(...entries.map((entry) => ({ id: crypto.randomUUID(), at: now, ...entry })));
-    db.audit = db.audit.slice(0, 5000);
-    writeDb(db);
-    return;
-  }
-  const payload = entries.map((entry) => ({
-    id: crypto.randomUUID(),
-    spend_id: entry.spendId,
-    upload_id: entry.uploadId,
-    action: entry.action,
-    actor: entry.actor,
-    at: now,
-    platform: entry.platform,
-    store_name: entry.storeName,
-    period_start: entry.periodStart,
-    period_end: entry.periodEnd,
-    snapshot: entry.snapshot ?? {},
-  }));
-  for (let index = 0; index < payload.length; index += 200) {
-    const { error } = await client().from("marketing_spend_audit").insert(payload.slice(index, index + 200));
-    if (error) schemaOrFail(error, "mencatat audit marketing");
-  }
-}
-
 function materialize(rows: Resolved[], source: SpendSource, filename: string, actor: string, uploadId: string): MarketingRecord[] {
   const now = new Date().toISOString();
   return rows.map((row) => ({
@@ -314,48 +240,78 @@ function materialize(rows: Resolved[], source: SpendSource, filename: string, ac
   }));
 }
 
-async function saveResolved(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+function requireDay(value: string, label: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new AppError(`${label} harus tanggal YYYY-MM-DD.`);
+  const [year, month, day] = value.split("-").map(Number);
+  const stamp = new Date(Date.UTC(year, (month ?? 1) - 1, day));
+  if (stamp.getUTCFullYear() !== year || stamp.getUTCMonth() !== (month ?? 1) - 1 || stamp.getUTCDate() !== day) {
+    throw new AppError(`${label} tidak valid.`);
+  }
+  return value;
+}
+
+function assertRows(rows: Resolved[]) {
   for (const row of rows) {
+    requireDay(row.periodStart, "Tanggal mulai");
+    requireDay(row.periodEnd, "Tanggal selesai");
     if (!sameCalendarMonth(row.periodStart, row.periodEnd) || row.periodEnd < row.periodStart) {
       throw new AppError("Tanggal mulai dan selesai harus dalam bulan yang sama.");
     }
     if (!row.storeName.trim()) throw new AppError("Pilih toko.");
     if (!row.platform.trim()) throw new AppError("Pilih platform.");
   }
-  const active = await loadRows("active");
-  const duplicates = duplicateGroups(spansOf(active), rows);
-  if (duplicates.length && !overwrite) throw new ConflictError(duplicateText(duplicates), duplicates);
+}
+
+async function saveResolved(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+  assertRows(rows);
+  if (supabaseConfigured()) return saveResolvedRemote(rows, source, filename, actor, overwrite);
+  return withFileLock(() => saveResolvedFile(rows, source, filename, actor, overwrite));
+}
+
+async function saveResolvedRemote(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
   const uploadId = crypto.randomUUID();
   const created = materialize(rows, source, filename, actor, uploadId);
-  await insertRows(created);
-  const oldIds = duplicates.flatMap((group) => group.ids);
-  const oldRows = active.filter((row) => oldIds.includes(row.id));
-  if (overwrite && oldIds.length) await markDeleted(oldIds, actor);
-  await writeSpendAudit([
-    ...oldRows.map((row) => ({
-      spendId: row.id,
-      uploadId,
-      action: "overwrite" as const,
-      actor,
+  const { data, error } = await client().rpc("marketing_apply", { p: {
+    action: "save",
+    actor,
+    overwrite,
+    uploadId,
+    rows: created.map((row) => ({
+      id: row.id,
+      line_no: row.lineNo,
+      period_start: row.periodStart,
+      period_end: row.periodEnd,
       platform: row.platform,
-      storeName: row.storeName,
-      periodStart: row.periodStart,
-      periodEnd: row.periodEnd,
-      snapshot: row,
+      store_name: row.storeName,
+      campaign: row.campaign,
+      spend: row.spend,
+      impressions: row.impressions,
+      clicks: row.clicks,
+      orders: row.orders,
+      ads_revenue: row.adsRevenue,
+      source: row.source,
+      source_file: row.sourceFile,
+      created_at: row.createdAt,
     })),
-    {
-      spendId: null,
-      uploadId,
-      action: "create" as const,
-      actor,
-      platform: rows[0]?.platform ?? "",
-      storeName: rows[0]?.storeName ?? "",
-      periodStart: rows.reduce((min, row) => row.periodStart < min ? row.periodStart : min, rows[0]?.periodStart ?? ""),
-      periodEnd: rows.reduce((max, row) => row.periodEnd > max ? row.periodEnd : max, rows[0]?.periodEnd ?? ""),
-      snapshot: { count: created.length, filename, source, ids: created.map((row) => row.id) },
-    },
-  ]);
-  return { inserted: created.length, replaced: oldRows.length };
+  } });
+  if (error) schemaOrFail(error, "menyimpan marketing spending");
+  const result = (data ?? {}) as { conflict?: boolean; inserted?: number; replaced?: number; duplicates?: { id: string; platform: string; storeName: string; periodStart: string; periodEnd: string }[] };
+  if (result.conflict) {
+    const groups = duplicateGroups((result.duplicates ?? []).map((row) => ({
+      id: String(row.id), platform: row.platform, storeName: row.storeName, periodStart: row.periodStart, periodEnd: row.periodEnd,
+    })), rows);
+    throw new ConflictError(duplicateText(groups), groups);
+  }
+  return { inserted: Number(result.inserted ?? 0), replaced: Number(result.replaced ?? 0) };
+}
+
+async function saveResolvedFile(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+  const uploadId = crypto.randomUUID();
+  const created = materialize(rows, source, filename, actor, uploadId);
+  const plan = planSave(readDb(), created, overwrite, created[0]?.createdAt ?? new Date().toISOString());
+  if (!plan.ok) throw new ConflictError(duplicateText(plan.duplicates), plan.duplicates);
+  writeDb(plan.db);
+  return { inserted: plan.inserted, replaced: plan.replaced };
 }
 
 export async function commitUpload(input: { filename: string; buffer: Buffer; platform: string; storeName: string | null; stores: string[]; overwrite: boolean; actor: string }): Promise<{ inserted: number; replaced: number }> {
@@ -406,7 +362,7 @@ export async function addManual(input: {
     impressions: input.impressions,
     clicks: input.clicks,
     orders: input.orders,
-    adsRevenue: input.adsRevenue,
+    adsRevenue: input.adsRevenue == null ? null : Math.round(input.adsRevenue * 100) / 100,
   };
   return saveResolved([row], "manual", "", input.actor, input.overwrite);
 }
@@ -414,19 +370,15 @@ export async function addManual(input: {
 export async function softDeleteMarketing(ids: string[], actor: string): Promise<number> {
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return 0;
-  const active = await loadRows("active");
-  const rows = active.filter((row) => unique.includes(row.id));
-  await markDeleted(rows.map((row) => row.id), actor);
-  await writeSpendAudit(rows.map((row) => ({
-    spendId: row.id,
-    uploadId: row.uploadId || null,
-    action: "delete" as const,
-    actor,
-    platform: row.platform,
-    storeName: row.storeName,
-    periodStart: row.periodStart,
-    periodEnd: row.periodEnd,
-    snapshot: row,
-  })));
-  return rows.length;
+  if (supabaseConfigured()) {
+    const { data, error } = await client().rpc("marketing_apply", { p: { action: "delete", actor, ids: unique } });
+    if (error) schemaOrFail(error, "menghapus marketing spending");
+    return Number((data as { replaced?: number } | null)?.replaced ?? 0);
+  }
+  return withFileLock(async () => {
+    const before = readDb();
+    const next = planDelete(before, unique, actor, new Date().toISOString());
+    writeDb(next);
+    return before.rows.filter((row) => unique.includes(row.id) && !row.deletedAt).length;
+  });
 }
