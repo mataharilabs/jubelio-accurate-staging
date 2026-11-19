@@ -13,11 +13,17 @@ function optional(value: unknown): number | null {
   return parsed == null ? null : Math.round(parsed);
 }
 
+function money(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = parseNumber(value);
+  return parsed == null ? null : Math.round(parsed * 100) / 100;
+}
+
 export async function POST(request: Request) {
   try {
     const session = await requireMarketing(true);
     const body = (await request.json()) as Record<string, unknown>;
-    const spend = parseNumber(body.spend);
+    const spend = money(body.spend);
     if (spend == null) throw new AppError("Isi spend.");
     const result = await addManual({
       periodStart: String(body.periodStart ?? ""),
@@ -29,7 +35,7 @@ export async function POST(request: Request) {
       impressions: optional(body.impressions),
       clicks: optional(body.clicks),
       orders: optional(body.orders),
-      adsRevenue: optional(body.adsRevenue),
+      adsRevenue: money(body.adsRevenue),
       stores: await marketingStoreChoices(),
       overwrite: body.overwrite === true,
       actor: await actorLabel(session),

@@ -313,6 +313,7 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
   const header = findHeader(rows, ["tanggal_mulai", "tanggal_selesai", "platform", "toko", "spend"]);
   if (!header) throw new AppError("Berkas ini bukan template Excel standar. Kolom tanggal_mulai tidak ditemukan. Unduh templatenya, isi, lalu unggah lagi.");
   const crossing: SkippedRow[] = [];
+  const unknown: SkippedRow[] = [];
   for (let index = header.index + 1; index < rows.length; index += 1) {
     const row = rows[index] ?? [];
     const values = TEMPLATE_COLUMNS.map((name) => pick(header.map, row, name));
@@ -320,7 +321,8 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
     result.readCount += 1;
     const start = parseDate(pick(header.map, row, "tanggal_mulai"));
     const end = parseDate(pick(header.map, row, "tanggal_selesai"));
-    const platform = normalizePlatform(cellText(pick(header.map, row, "platform"))) ?? (fallbackPlatform && isPlatform(fallbackPlatform) ? fallbackPlatform : null);
+    const rawPlatform = cellText(pick(header.map, row, "platform"));
+    const platform = rawPlatform ? normalizePlatform(rawPlatform) : (fallbackPlatform && isPlatform(fallbackPlatform) ? fallbackPlatform : null);
     const storeRaw = cellText(pick(header.map, row, "toko"));
     const spend = money(pick(header.map, row, "spend"));
     if (!start || !end || end < start) {
@@ -331,8 +333,12 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
       crossing.push({ row: index + 1, reason: "lintas bulan" });
       continue;
     }
+    if (rawPlatform && !platform) {
+      unknown.push({ row: index + 1, reason: `platform tidak dikenal: ${rawPlatform}` });
+      continue;
+    }
     if (!platform) {
-      result.skipped.push({ row: index + 1, reason: "platform tidak dikenal" });
+      result.skipped.push({ row: index + 1, reason: "platform kosong" });
       continue;
     }
     if (!storeRaw) {
@@ -360,12 +366,21 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
   const span = spanOf(result.rows.length ? result.rows : []);
   result.periodStart = span.start;
   result.periodEnd = span.end;
-  if (crossing.length) {
-    result.crossesMonth = true;
-    result.skipped.push(...crossing);
-    const sample = crossing.map((item) => `baris ${item.row}`).join(", ");
-    result.monthMessage = `Template ${filename} punya ${crossing.length} baris lintas bulan (${sample}). Tanggal mulai dan selesai harus dalam bulan yang sama. Upload ditolak. Untuk TikTok harian, pecah menjadi satu baris per hari.`;
+  if (crossing.length || unknown.length) {
     result.rows = [];
+    const parts: string[] = [];
+    if (crossing.length) {
+      result.crossesMonth = true;
+      result.skipped.push(...crossing);
+      const sample = crossing.map((item) => `baris ${item.row}`).join(", ");
+      parts.push(`Template ${filename} punya ${crossing.length} baris lintas bulan (${sample}). Tanggal mulai dan selesai harus dalam bulan yang sama.`);
+    }
+    if (unknown.length) {
+      result.skipped.push(...unknown);
+      const names = [...new Set(unknown.map((item) => item.reason.replace("platform tidak dikenal: ", "")))].join(", ");
+      parts.push(`Platform tidak dikenal: ${names}. Gunakan ${PLATFORMS.join(", ")}. Sel platform yang kosong mengikuti platform yang dipilih saat unggah. Upload ditolak.`);
+    }
+    result.monthMessage = parts.join(" ");
   }
   return result;
 }

@@ -151,6 +151,21 @@ describe("marketing parsers", () => {
     expect(rejected.crossesMonth).toBe(true);
     expect(rejected.rows).toHaveLength(0);
   });
+
+  it("rejects an unknown template platform instead of using the selected platform", () => {
+    const book = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["tanggal_mulai", "tanggal_selesai", "platform", "toko", "nama_kampanye", "spend"],
+      ["09/11/2026", "15/11/2026", "TikTok", "Bee & Flower", "Salah", 1000],
+      ["09/11/2026", "15/11/2026", "", "Bee & Flower", "Kosong", 500],
+    ]);
+    XLSX.utils.book_append_sheet(book, sheet, "Marketing");
+    const buffer = XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    const parsed = parseUpload("template.xlsx", buffer, "Lazada Ads");
+    expect(parsed.rows).toHaveLength(0);
+    expect(parsed.monthMessage).toMatch(/Platform tidak dikenal: TikTok/);
+    expect(parsed.monthMessage).not.toMatch(/Lazada Ads mengikuti/);
+  });
 });
 
 describe("marketing metrics", () => {
