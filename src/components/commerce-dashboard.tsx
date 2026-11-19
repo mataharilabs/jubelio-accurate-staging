@@ -215,8 +215,8 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <Kpi label="Revenue Bersih" value={rpCompact(A.net)} hint="kotor − diskon" current={A.net} prior={C?.net} compare={compare} />
             <Kpi label="Total HPP" value={rpCompact(A.hpp)} hint={A.missingSkus ? `${A.missingSkus} SKU belum ada HPP (dihitung 0)` : "DPP × 1,11 (inkl. PPN)"} current={A.hpp} prior={C?.hpp} compare={compare} invert />
             <Kpi label="Total Biaya Platform" value={rpCompact(A.fee)} hint="sementara 0" current={A.fee} prior={C?.fee} compare={compare} invert />
-            <Kpi label="Total Marketing Spending" value={rpCompact(A.marketing)} hint="0 · modul belum tersedia" current={A.marketing} prior={C?.marketing} compare={compare && mode === "toko"} invert />
-            <Kpi label="Total Profit" value={rpCompact(A.profit)} hint={A.net ? `margin ${((A.profit / A.net) * 100).toFixed(1).replace(".", ",")}%` : ""} current={A.profit} prior={C?.profit} compare={compare} tone={A.profit < 0 ? "bad" : "ok"} />
+            <Kpi label="Total Marketing Spending" value={rpCompact(mode === "toko" ? A.marketing : 0)} hint={mode === "toko" ? "dari Master Marketing Spending · apa adanya dari report" : "tidak dipotong dari profit produk"} current={mode === "toko" ? A.marketing : 0} prior={mode === "toko" ? C?.marketing : 0} compare={compare && mode === "toko"} invert />
+            <Kpi label="Total Profit" value={rpCompact(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit)} hint={A.net ? `margin ${(((mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) / A.net) * 100).toFixed(1).replace(".", ",")}%` : ""} current={mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit} prior={C ? (mode === "toko" ? C.net - C.hpp - C.fee - C.marketing : C.profit) : undefined} compare={compare} tone={(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) < 0 ? "bad" : "ok"} />
             <Kpi label="Jumlah Pesanan" value={numId(A.orders)} hint="tidak termasuk Dihapus" current={A.orders} prior={C?.orders} compare={compare} money={false} />
             <Kpi label="Qty Terjual" value={`${numId(A.qty)} pcs`} hint="" current={A.qty} prior={C?.qty} compare={compare} money={false} />
             <Kpi label="AOV" value={rpCompact(A.aov)} hint="Revenue Bersih ÷ Jumlah Pesanan" current={A.aov} prior={C?.aov} compare={compare} />
@@ -224,7 +224,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           {A.missingSkus ? (
             <div className="warnbox mt"><b>{A.missingSkus} SKU belum punya HPP</b> di periode ini — dihitung <b>Rp0</b>, sehingga Profit terlihat lebih besar dari seharusnya.{A.missingSkuSample?.length ? ` Contoh: ${A.missingSkuSample.join(", ")}.` : ""} <a href="/produk/hpp">Lengkapi di Master Data › HPP</a></div>
           ) : null}
-          <div className="formula"><b>{profitLabel}</b> = Revenue Bersih <b>{rp(A.net)}</b> − HPP <b>{rp(A.hpp)}</b> − Biaya Platform <b>{rp(A.fee)}</b>{mode === "toko" ? <> − Marketing Spending <b>{rp(A.marketing)}</b></> : <> − Marketing <b>Rp0</b></>} = <b>{rp(A.profit)}</b></div>
+          <div className="formula"><b>{profitLabel}</b> = Revenue Bersih <b>{rp(A.net)}</b> − HPP <b>{rp(A.hpp)}</b> − Biaya Platform <b>{rp(A.fee)}</b>{mode === "toko" ? <> − Marketing Spending <b>{rp(A.marketing)}</b></> : <> − Marketing <b>Rp0</b></>} = <b>{rp(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit)}</b></div>
           <div className="card mt">
             <h3>Tren Penjualan <small>{METRIC_LABEL[metric]} per hari</small></h3>
             <BarChart
@@ -237,7 +237,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           </div>
           {mode === "toko" ? (
             <>
-              <PerTable title="Penjualan per Toko" rows={report?.stores ?? []} compareRows={previous?.stores} metric={metric} compare={compare} />
+              <PerTable title="Penjualan per Toko" rows={(report?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: (row.net ?? 0) - (row.hpp ?? 0) - (row.marketing ?? 0) }))} compareRows={(previous?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: (row.net ?? 0) - (row.hpp ?? 0) - (row.marketing ?? 0) }))} metric={metric} compare={compare} showMarketing />
               <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
               <div className="card mt"><h3>Penjualan per Channel <small>{METRIC_LABEL[metric]}</small></h3><Donut items={(report?.channels ?? []).map((row, index) => ({ label: row.key || "—", value: Math.max(0, metricOf(row, metric)), color: CHART_PAL[index % CHART_PAL.length] }))} /></div>
             </>
@@ -266,7 +266,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <ul>
               <li><b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : ". Marketing ditampilkan 0"}.</li>
               <li><b>Biaya Platform</b> sementara semua 0. Nanti dari Excel penarikan dana.</li>
-              <li><b>Marketing Spending</b> = 0 sampai modul Master Marketing Spending tersedia.</li>
+              <li><b>Marketing Spending</b> mengikuti periode dan filter toko, apa adanya dari report (tanpa PPN). Spend mingguan dihitung utuh bila periodenya masuk jendela, dan diprorata per hari bila hanya sebagian. Tidak dipecah per channel atau SKU. Profit toko menguranginya; profit produk tidak.</li>
               <li><b>HPP</b> = HPP Accurate bulan pesanan (posisi tanggal 1) = DPP × 1,11. Jika snapshot bulan hilang, dipakai bulan sebelumnya. SKU yang sama sekali belum punya HPP dihitung 0.</li>
               <li>Pesanan <b>Dihapus</b> tidak dihitung. Pesanan <b>-R</b> (Barang Hilang, harga 0) ikut dihitung. RETURNED ikut kecuali difilter keluar.</li>
             </ul>
@@ -294,16 +294,16 @@ function Kpi({ label, value, hint, current, prior, compare, invert, money = true
   );
 }
 
-function PerTable({ title, rows, compareRows, metric, compare, defaultSize = 25 }: { title: string; rows: GroupRow[]; compareRows?: GroupRow[]; metric: Metric; compare: boolean; defaultSize?: number }) {
+function PerTable({ title, rows, compareRows, metric, compare, defaultSize = 25, showMarketing = false }: { title: string; rows: GroupRow[]; compareRows?: GroupRow[]; metric: Metric; compare: boolean; defaultSize?: number; showMarketing?: boolean }) {
   return (
     <div className="tablecard mt">
       <div className="th3"><b>{title}</b> <small className="mut">urut {METRIC_LABEL[metric]}</small></div>
-      <PerBody rows={rows} compareRows={compareRows} metric={metric} compare={compare} defaultSize={defaultSize} tableKey={title} col={title.replace("Penjualan per ", "")} />
+      <PerBody rows={rows} compareRows={compareRows} metric={metric} compare={compare} defaultSize={defaultSize} tableKey={title} col={title.replace("Penjualan per ", "")} showMarketing={showMarketing} />
     </div>
   );
 }
 
-function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSize = 25 }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number }[]; metric: Metric; compare: boolean; col: string; tableKey: string; defaultSize?: number }) {
+function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSize = 25, showMarketing = false }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number }[]; metric: Metric; compare: boolean; col: string; tableKey: string; defaultSize?: number; showMarketing?: boolean }) {
   const sorted = [...rows].sort((a, b) => metricOf(b, metric) - metricOf(a, metric));
   const page = useClientPage(sorted, `dash-${tableKey}-${metric}`, defaultSize);
   const shown = page.shown;
@@ -312,7 +312,7 @@ function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSiz
   return (
     <>
     <div className="tscroll"><table>
-      <thead><tr><th>{col}</th><th className="n">Pesanan</th><th className="n">Qty</th><th className={metric === "gross" ? "n hl" : "n"}>Penjualan Kotor</th><th className={metric === "net" ? "n hl" : "n"}>Revenue Bersih</th><th className={metric === "profit" ? "n hl" : "n"}>Profit</th><th className="n">Porsi</th>{compare ? <th className="n">vs periode</th> : null}</tr></thead>
+      <thead><tr><th>{col}</th><th className="n">Pesanan</th><th className="n">Qty</th><th className={metric === "gross" ? "n hl" : "n"}>Penjualan Kotor</th><th className={metric === "net" ? "n hl" : "n"}>Revenue Bersih</th>{showMarketing ? <th className="n">Marketing</th> : null}<th className={metric === "profit" ? "n hl" : "n"}>Profit</th><th className="n">Porsi</th>{compare ? <th className="n">vs periode</th> : null}</tr></thead>
       <tbody>
         {shown.map((row) => {
           const share = Math.max(0, metricOf(row, metric)) / total * 100;
@@ -325,13 +325,14 @@ function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSiz
               <td className="n">{numId(row.qty)}</td>
               <td className="n">{rp(row.gross)}</td>
               <td className="n">{rp(row.net)}</td>
+              {showMarketing ? <td className="n">{rp(row.marketing ?? 0)}</td> : null}
               <td className="n">{rp(row.profit ?? 0)}</td>
               <td className="n">{share.toFixed(1).replace(".", ",")}%</td>
               {compare ? <td className="n">{delta == null ? "—" : `${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(1).replace(".", ",")}%`}</td> : null}
             </tr>
           );
         })}
-        {!shown.length ? <tr><td colSpan={8} className="mut">Tidak ada data</td></tr> : null}
+        {!shown.length ? <tr><td colSpan={8 + (showMarketing ? 1 : 0)} className="mut">Tidak ada data</td></tr> : null}
       </tbody>
     </table></div>
     <Pager page={page.page} pageSize={page.pageSize} total={page.total} shown={shown.length} onPage={page.setPage} onPageSize={page.setPageSize} />

@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { CleanLine } from "@/lib/cleanup/rapikan";
 import { sanitizeSettings } from "@/lib/db/defaults";
 import { bucketLabel } from "@/lib/domain/aggregate";
+import { attachMarketing } from "@/lib/marketing/dashboard";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion, type SyncAttempt } from "@/lib/domain/phase3";
 import { planCancels, planImport } from "@/lib/domain/plan";
@@ -327,7 +328,7 @@ export class SupabaseStore implements DataStore {
     }), "menghitung dasbor");
     const raw = data as DashboardReport;
     const net = Number(raw.kpis?.net ?? 0);
-    return {
+    const report: DashboardReport = {
       ...raw,
       kpis: {
         gross: Number(raw.kpis.gross),
@@ -382,6 +383,7 @@ export class SupabaseStore implements DataStore {
       brands: (raw.brands ?? []).map(numberGroup),
       categories: (raw.categories ?? []).map(numberGroup),
     };
+    return attachMarketing(report, query);
   }
 
   async filterOptions(): Promise<FilterOptions> {

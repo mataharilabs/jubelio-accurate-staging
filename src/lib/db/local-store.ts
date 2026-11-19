@@ -8,6 +8,7 @@ import { matchesOrderFilter, matchesOrderScope } from "@/lib/domain/order-filter
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion } from "@/lib/domain/phase3";
 import { reportOf } from "@/lib/domain/aggregate";
+import { attachMarketing } from "@/lib/marketing/dashboard";
 import { reviewRow } from "@/lib/domain/review-rows";
 import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
 import type {
@@ -163,7 +164,7 @@ export class LocalStore implements DataStore {
     } catch {
       names = new Map();
     }
-    return reportOf(this.db.versions, query, names);
+    return attachMarketing(reportOf(this.db.versions, query, names), query);
   }
 
   async filterOptions(): Promise<FilterOptions> {

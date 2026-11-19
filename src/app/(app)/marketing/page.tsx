@@ -1,5 +1,5 @@
-import { SoonPage } from "@/components/soon-page";
+import { MarketingView } from "@/components/marketing-view";
 
 export default function Page() {
-  return <SoonPage title="Marketing spending" />;
+  return <MarketingView />;
 }
