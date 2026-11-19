@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -57,5 +57,12 @@ describe("marketing save", () => {
     const removed = await softDeleteMarketing(active.map((row) => row.id), "Matahari Labs");
     expect(removed).toBe(1);
     expect(await listMarketing({ month: "2026-11", status: "active" })).toHaveLength(0);
+    await expect(addManual({ ...input, periodStart: "", periodEnd: "", overwrite: false })).rejects.toThrow(/YYYY-MM-DD/);
+    await expect(addManual({ ...input, adsRevenue: 100.5, overwrite: false })).resolves.toMatchObject({ inserted: 1 });
+    const kept = await listMarketing({ month: "2026-11", status: "active" });
+    expect(kept[0]?.adsRevenue).toBe(100.5);
+    writeFileSync(process.env.MARKETING_DATA_FILE ?? "", "{");
+    await expect(addManual(input)).rejects.toThrow();
+    expect(await import("node:fs").then((fs) => fs.readFileSync(process.env.MARKETING_DATA_FILE ?? "", "utf8"))).toBe("{");
   });
 });

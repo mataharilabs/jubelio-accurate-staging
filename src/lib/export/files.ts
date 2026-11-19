@@ -57,9 +57,11 @@ export function ordersSheet(rows: OrderPageRow[]): Buffer {
   return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
 
-export function dashboardSheet(report: DashboardReport, compare?: { label: string; report: DashboardReport }[]): Buffer {
+export function dashboardSheet(report: DashboardReport, compare?: { label: string; report: DashboardReport }[], mode: "toko" | "produk" = "produk"): Buffer {
   const book = XLSX.utils.book_new();
   const kpi = report.kpis;
+  const marketing = mode === "toko" ? kpi.marketing : 0;
+  const profit = kpi.net - kpi.hpp - kpi.fee - marketing;
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet([
     { Metrik: "Penjualan kotor", Nilai: kpi.gross },
     { Metrik: "Diskon", Nilai: kpi.disc },
@@ -67,9 +69,16 @@ export function dashboardSheet(report: DashboardReport, compare?: { label: strin
     { Metrik: "Jumlah pesanan", Nilai: kpi.orders },
     { Metrik: "Qty terjual", Nilai: kpi.qty },
     { Metrik: "AOV", Nilai: kpi.aov },
+    { Metrik: "Marketing spending", Nilai: marketing },
+    { Metrik: mode === "toko" ? "Profit toko" : "Profit produk", Nilai: profit },
   ]), "KPI");
+  const stores = report.stores.map((row) => ({
+    ...row,
+    marketing: mode === "toko" ? row.marketing ?? 0 : 0,
+    profit: mode === "toko" ? (row.net ?? 0) - (row.hpp ?? 0) - (row.marketing ?? 0) : (row.profit ?? (row.net ?? 0) - (row.hpp ?? 0)),
+  }));
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.channels), "Channel");
-  XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.stores), "Toko");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(stores), "Toko");
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.products), "Produk");
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.provinces), "Provinsi");
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.cities), "Kota");

@@ -39,12 +39,23 @@ function filePath(): string {
 }
 
 function readDb(): FileDb {
+  let text: string;
   try {
-    const parsed = JSON.parse(readFileSync(filePath(), "utf8")) as FileDb;
-    return { rows: parsed.rows ?? [], audit: parsed.audit ?? [] };
-  } catch {
-    return { rows: [], audit: [] };
+    text = readFileSync(filePath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { rows: [], audit: [] };
+    throw error;
   }
+  const parsed = JSON.parse(text) as FileDb;
+  return { rows: parsed.rows ?? [], audit: parsed.audit ?? [] };
+}
+
+let fileQueue: Promise<unknown> = Promise.resolve();
+
+function withFileLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = fileQueue.then(work, work);
+  fileQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 function writeDb(db: FileDb) {
@@ -57,8 +68,10 @@ function client(): SupabaseClient {
 }
 
 function missingSchema(error: { message?: string; code?: string } | null): boolean {
+  const code = error?.code ?? "";
+  if (code === "42501") return false;
   const text = error?.message ?? "";
-  return error?.code === "42P01" || error?.code === "PGRST205" || /marketing_spend|does not exist|schema cache/i.test(text);
+  return code === "42P01" || code === "PGRST205" || code === "PGRST202" || /does not exist|schema cache|could not find the function/i.test(text);
 }
 
 function schemaOrFail(error: { message?: string; code?: string } | null, action: string): never {
@@ -314,14 +327,72 @@ function materialize(rows: Resolved[], source: SpendSource, filename: string, ac
   }));
 }
 
-async function saveResolved(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+function requireDay(value: string, label: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new AppError(`${label} harus tanggal YYYY-MM-DD.`);
+  const [year, month, day] = value.split("-").map(Number);
+  const stamp = new Date(Date.UTC(year, month - 1, day));
+  if (stamp.getUTCFullYear() !== year || stamp.getUTCMonth() !== month - 1 || stamp.getUTCDate() !== day) {
+    throw new AppError(`${label} tidak valid.`);
+  }
+  return value;
+}
+
+function assertRows(rows: Resolved[]) {
   for (const row of rows) {
+    requireDay(row.periodStart, "Tanggal mulai");
+    requireDay(row.periodEnd, "Tanggal selesai");
     if (!sameCalendarMonth(row.periodStart, row.periodEnd) || row.periodEnd < row.periodStart) {
       throw new AppError("Tanggal mulai dan selesai harus dalam bulan yang sama.");
     }
     if (!row.storeName.trim()) throw new AppError("Pilih toko.");
     if (!row.platform.trim()) throw new AppError("Pilih platform.");
   }
+}
+
+async function saveResolved(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+  assertRows(rows);
+  if (supabaseConfigured()) return saveResolvedRemote(rows, source, filename, actor, overwrite);
+  return withFileLock(() => saveResolvedFile(rows, source, filename, actor, overwrite));
+}
+
+async function saveResolvedRemote(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
+  const uploadId = crypto.randomUUID();
+  const created = materialize(rows, source, filename, actor, uploadId);
+  const { data, error } = await client().rpc("marketing_apply", { p: {
+    action: "save",
+    actor,
+    overwrite,
+    uploadId,
+    rows: created.map((row) => ({
+      id: row.id,
+      line_no: row.lineNo,
+      period_start: row.periodStart,
+      period_end: row.periodEnd,
+      platform: row.platform,
+      store_name: row.storeName,
+      campaign: row.campaign,
+      spend: row.spend,
+      impressions: row.impressions,
+      clicks: row.clicks,
+      orders: row.orders,
+      ads_revenue: row.adsRevenue,
+      source: row.source,
+      source_file: row.sourceFile,
+      created_at: row.createdAt,
+    })),
+  } });
+  if (error) schemaOrFail(error, "menyimpan marketing spending");
+  const result = (data ?? {}) as { conflict?: boolean; inserted?: number; replaced?: number; duplicates?: { id: string; platform: string; storeName: string; periodStart: string; periodEnd: string }[] };
+  if (result.conflict) {
+    const groups = duplicateGroups((result.duplicates ?? []).map((row) => ({
+      id: row.id, platform: row.platform, storeName: row.storeName, periodStart: row.periodStart, periodEnd: row.periodEnd,
+    })), rows);
+    throw new ConflictError(duplicateText(groups), groups);
+  }
+  return { inserted: Number(result.inserted ?? 0), replaced: Number(result.replaced ?? 0) };
+}
+
+async function saveResolvedFile(rows: Resolved[], source: SpendSource, filename: string, actor: string, overwrite: boolean): Promise<{ inserted: number; replaced: number }> {
   const active = await loadRows("active");
   const duplicates = duplicateGroups(spansOf(active), rows);
   if (duplicates.length && !overwrite) throw new ConflictError(duplicateText(duplicates), duplicates);
@@ -406,7 +477,7 @@ export async function addManual(input: {
     impressions: input.impressions,
     clicks: input.clicks,
     orders: input.orders,
-    adsRevenue: input.adsRevenue,
+    adsRevenue: input.adsRevenue == null ? null : Math.round(input.adsRevenue * 100) / 100,
   };
   return saveResolved([row], "manual", "", input.actor, input.overwrite);
 }
@@ -414,19 +485,26 @@ export async function addManual(input: {
 export async function softDeleteMarketing(ids: string[], actor: string): Promise<number> {
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return 0;
-  const active = await loadRows("active");
-  const rows = active.filter((row) => unique.includes(row.id));
-  await markDeleted(rows.map((row) => row.id), actor);
-  await writeSpendAudit(rows.map((row) => ({
-    spendId: row.id,
-    uploadId: row.uploadId || null,
-    action: "delete" as const,
-    actor,
-    platform: row.platform,
-    storeName: row.storeName,
-    periodStart: row.periodStart,
-    periodEnd: row.periodEnd,
-    snapshot: row,
-  })));
-  return rows.length;
+  if (supabaseConfigured()) {
+    const { data, error } = await client().rpc("marketing_apply", { p: { action: "delete", actor, ids: unique } });
+    if (error) schemaOrFail(error, "menghapus marketing spending");
+    return Number((data as { replaced?: number } | null)?.replaced ?? 0);
+  }
+  return withFileLock(async () => {
+    const active = await loadRows("active");
+    const rows = active.filter((row) => unique.includes(row.id));
+    await markDeleted(rows.map((row) => row.id), actor);
+    await writeSpendAudit(rows.map((row) => ({
+      spendId: row.id,
+      uploadId: row.uploadId || null,
+      action: "delete" as const,
+      actor,
+      platform: row.platform,
+      storeName: row.storeName,
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd,
+      snapshot: row,
+    })));
+    return rows.length;
+  });
 }

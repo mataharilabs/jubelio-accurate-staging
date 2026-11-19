@@ -29,10 +29,14 @@ export function parseNumber(value: unknown): number | null {
   return negative ? -parsed : parsed;
 }
 
-function money(value: unknown): number | null {
+export function moneyOrNull(value: unknown): number | null {
   const parsed = parseNumber(value);
   if (parsed == null) return null;
   return Math.round(parsed * 100) / 100;
+}
+
+function money(value: unknown): number | null {
+  return moneyOrNull(value);
 }
 
 function count(value: unknown): number | null {
@@ -320,7 +324,8 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
     result.readCount += 1;
     const start = parseDate(pick(header.map, row, "tanggal_mulai"));
     const end = parseDate(pick(header.map, row, "tanggal_selesai"));
-    const platform = normalizePlatform(cellText(pick(header.map, row, "platform"))) ?? (fallbackPlatform && isPlatform(fallbackPlatform) ? fallbackPlatform : null);
+    const rawPlatform = cellText(pick(header.map, row, "platform"));
+    const platform = rawPlatform ? normalizePlatform(rawPlatform) : (fallbackPlatform && isPlatform(fallbackPlatform) ? fallbackPlatform : null);
     const storeRaw = cellText(pick(header.map, row, "toko"));
     const spend = money(pick(header.map, row, "spend"));
     if (!start || !end || end < start) {

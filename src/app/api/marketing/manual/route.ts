@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { recordAudit } from "@/lib/access/store";
 import { fail } from "@/lib/http";
 import { AppError } from "@/lib/errors";
-import { actorLabel, requireMarketing } from "@/lib/marketing/access";
+import { actorLabel, auditQuiet, requireMarketing } from "@/lib/marketing/access";
 import { marketingStoreChoices } from "@/lib/marketing/catalog";
-import { parseNumber } from "@/lib/marketing/parse";
+import { moneyOrNull, parseNumber } from "@/lib/marketing/parse";
 import { ConflictError, addManual } from "@/lib/marketing/service";
 
 function optional(value: unknown): number | null {
@@ -17,7 +16,7 @@ export async function POST(request: Request) {
   try {
     const session = await requireMarketing(true);
     const body = (await request.json()) as Record<string, unknown>;
-    const spend = parseNumber(body.spend);
+    const spend = moneyOrNull(body.spend);
     if (spend == null) throw new AppError("Isi spend.");
     const result = await addManual({
       periodStart: String(body.periodStart ?? ""),
@@ -29,12 +28,12 @@ export async function POST(request: Request) {
       impressions: optional(body.impressions),
       clicks: optional(body.clicks),
       orders: optional(body.orders),
-      adsRevenue: optional(body.adsRevenue),
+      adsRevenue: moneyOrNull(body.adsRevenue),
       stores: await marketingStoreChoices(),
       overwrite: body.overwrite === true,
       actor: await actorLabel(session),
     });
-    await recordAudit({
+    await auditQuiet({
       actorEmail: session.email,
       action: body.overwrite === true ? "marketing.overwrite" : "marketing.manual",
       entity: "marketing_spend",

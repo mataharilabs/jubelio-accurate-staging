@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { recordAudit } from "@/lib/access/store";
-import { actorLabel, requireMarketing } from "@/lib/marketing/access";
+import { actorLabel, auditQuiet, requireMarketing } from "@/lib/marketing/access";
 import { marketingStoreChoices } from "@/lib/marketing/catalog";
 import { wibMonth } from "@/lib/marketing/dates";
 import { listMarketing, softDeleteMarketing } from "@/lib/marketing/service";
@@ -28,7 +27,7 @@ export async function DELETE(request: Request) {
     const body = (await request.json()) as { ids?: string[] };
     const ids = Array.isArray(body.ids) ? body.ids.filter((id) => typeof id === "string") : [];
     const removed = await softDeleteMarketing(ids, await actorLabel(session));
-    await recordAudit({ actorEmail: session.email, action: "marketing.delete", entity: "marketing_spend", entityId: null, before: null, after: { ids, removed } });
+    await auditQuiet({ actorEmail: session.email, action: "marketing.delete", entity: "marketing_spend", entityId: null, before: null, after: { ids, removed } });
     return NextResponse.json({ ok: true, removed });
   } catch (error) {
     return fail(error);

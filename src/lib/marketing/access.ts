@@ -1,8 +1,17 @@
-import { listUsers, permissionsFor } from "@/lib/access/store";
+import { listUsers, permissionsFor, recordAudit, type AuditRecord } from "@/lib/access/store";
 import { ADMIN_ROLE, hasPermission, SUPER_ADMIN_ROLE } from "@/lib/auth/permissions";
 import type { Session } from "@/lib/auth/session";
 import { AppError } from "@/lib/errors";
 import { requireMaster, requireSession } from "@/lib/http";
+
+/** App audit log is secondary. A failure here must not look like the spend write failed. */
+export async function auditQuiet(entry: Omit<AuditRecord, "id" | "at">): Promise<void> {
+  try {
+    await recordAudit(entry);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Jejak audit tidak tercatat.");
+  }
+}
 
 export async function actorLabel(session: Session): Promise<string> {
   const users = await listUsers().catch(() => []);
