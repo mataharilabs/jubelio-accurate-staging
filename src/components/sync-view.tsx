@@ -8,6 +8,7 @@ import type { AppMeta, SyncReviewRow } from "@/lib/db/types";
 import type { SyncReviewPage } from "@/lib/db/store";
 import { invoiceTotals } from "@/lib/accurate/invoice";
 import { accurateIntent, SYNC_FAILED_REASON, syncReason } from "@/lib/domain/phase3";
+import { syncLogEmptyText, syncQueueEmptyText } from "@/lib/domain/sync-queue";
 import { rp } from "@/lib/format";
 
 type LogRow = { at: string; actor: string | null; action: string; noPesanan: string; note: string };
@@ -96,6 +97,8 @@ export function SyncView() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewFailed, setReviewFailed] = useState(false);
+  const [logFailed, setLogFailed] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [confirm, setConfirm] = useState<string[] | null>(null);
   const requestRef = useRef(0);
@@ -126,9 +129,16 @@ export function SyncView() {
       ]);
       if (id !== requestRef.current) return;
       if (metaResult.status === "fulfilled") setMeta(metaResult.value);
-      if (historyResult.status === "fulfilled") setLog(historyResult.value.log ?? []);
+      if (historyResult.status === "fulfilled") {
+        setLog(historyResult.value.log ?? []);
+        setLogFailed(false);
+      } else {
+        setLog([]);
+        setLogFailed(true);
+      }
       const ppn = (metaResult.status === "fulfilled" ? metaResult.value.ppnReportDate : metaRef.current?.ppnReportDate) || null;
       if (reviewResult.status === "fulfilled") {
+        setReviewFailed(false);
         setRows(reviewResult.value.rows);
         setTotal(reviewResult.value.total);
         setStores(reviewResult.value.facets?.stores ?? []);
@@ -141,6 +151,7 @@ export function SyncView() {
           return next;
         });
       } else {
+        setReviewFailed(true);
         setRows([]);
         setTotal(0);
       }
@@ -319,7 +330,14 @@ export function SyncView() {
                   </tr>
                 );
               })}
-              {!described.length ? <tr><td colSpan={13} className="empty">{q || from || to || store || channel || reason || action ? "Tidak ada pesanan untuk filter ini." : "Semua pesanan sudah tersinkron ke Accurate."}</td></tr> : null}
+              {!loading && !described.length ? (
+                <tr>
+                  <td colSpan={13} className="empty">
+                    {syncQueueEmptyText({ failed: reviewFailed, filtered: Boolean(q || from || to || store || channel || reason || action) })}
+                    {reviewFailed ? <button type="button" className="btn sm" style={{ marginLeft: 8 }} onClick={() => { loadRef.current().catch((err: Error) => setError(err.message)); }}>Coba lagi</button> : null}
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -337,7 +355,14 @@ export function SyncView() {
               <td data-label="Keterangan" className="small">{entry.note}</td>
             </tr>
           ))}
-          {!log.length ? <tr><td colSpan={5} className="mut">Belum ada log.</td></tr> : null}
+          {!loading && !log.length ? (
+            <tr>
+              <td colSpan={5} className={logFailed ? "empty" : "mut"}>
+                {syncLogEmptyText(logFailed)}
+                {logFailed ? <button type="button" className="btn sm" style={{ marginLeft: 8 }} onClick={() => { loadRef.current().catch((err: Error) => setError(err.message)); }}>Coba lagi</button> : null}
+              </td>
+            </tr>
+          ) : null}
         </tbody></table></div>
         <Pager page={logPage.page} pageSize={logPage.pageSize} total={logPage.total} shown={logPage.shown.length} onPage={logPage.setPage} onPageSize={logPage.setPageSize} />
       </div>

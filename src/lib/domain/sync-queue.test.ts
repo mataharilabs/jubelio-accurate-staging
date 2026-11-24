@@ -12,6 +12,10 @@ import {
 import {
   displayedQueue,
   pageSyncReview,
+  syncExportPageSize,
+  syncExportRestPages,
+  syncLogEmptyText,
+  syncQueueEmptyText,
   sqlAccurateAction,
   sqlClassify,
   sqlDisplayedQueue,
@@ -260,6 +264,19 @@ describe("sync queue parity", () => {
     expect(second.rows.every((row) => !firstNos.has(row.noPesanan))).toBe(true);
     expect(pageSyncReview(rows, { page: 0, pageSize: 25, reason: "Gagal sync" }).total).toBe(0);
     expect(pageSyncReview(rows, { page: 0, pageSize: 25, reason: "Belum pernah sync" }).total).toBe(30);
+  });
+
+  it("walks a full export in the page size the database returns", () => {
+    expect(syncExportPageSize(200)).toBe(200);
+    expect(syncExportPageSize(0)).toBe(200);
+    expect(syncExportRestPages(15525, 200)).toHaveLength(77);
+    expect(syncExportRestPages(15525, 200)[0]).toBe(1);
+    expect(syncExportRestPages(25, 200)).toEqual([]);
+    expect(syncQueueEmptyText({ failed: true, filtered: false })).toBe("Gagal memuat data pesanan.");
+    expect(syncQueueEmptyText({ failed: false, filtered: true })).toBe("Tidak ada pesanan untuk filter ini.");
+    expect(syncQueueEmptyText({ failed: false, filtered: false })).toBe("Semua pesanan sudah tersinkron ke Accurate.");
+    expect(syncLogEmptyText(true)).toBe("Gagal memuat log sinkron.");
+    expect(syncLogEmptyText(false)).toBe("Belum ada log.");
   });
 });
 

@@ -7,6 +7,7 @@ import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion, type SyncAttempt } from "@/lib/domain/phase3";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { reviewRow } from "@/lib/domain/review-rows";
+import { SYNC_EXPORT_PAGE, SYNC_EXPORT_PARALLEL, syncExportPageSize, syncExportRestPages } from "@/lib/domain/sync-queue";
 import type { DataStore, PreparedSync, SyncReviewPage, SyncReviewQuery, SyncWrite } from "@/lib/db/store";
 import type {
   AccurateCustomerCache,
@@ -686,18 +687,41 @@ export class SupabaseStore implements DataStore {
   }
 
   async syncReview(days: string[]): Promise<SyncReviewRow[]> {
-    const rows: SyncReviewRow[] = [];
-    const pageSize = 200;
-    for (let page = 0; page < 1000; page += 1) {
-      const result = await this.syncReviewPage({ page, pageSize, days });
-      rows.push(...result.rows);
-      if (result.rows.length === 0 || (page + 1) * pageSize >= result.total) break;
+    const ppnReportDate = (await this.getSettings()).ppnReportDate || "";
+    const first = await this.queueHeaders({ page: 0, pageSize: SYNC_EXPORT_PAGE, days }, ppnReportDate);
+    const pageSize = syncExportPageSize(first.pageSize);
+    const headers = [...first.headers];
+    const rest = syncExportRestPages(first.total, pageSize);
+    for (let index = 0; index < rest.length; index += SYNC_EXPORT_PARALLEL) {
+      const group = rest.slice(index, index + SYNC_EXPORT_PARALLEL);
+      const loaded = await Promise.all(group.map((page) => this.queueHeaders({ page, pageSize, days }, ppnReportDate)));
+      for (const item of loaded) headers.push(...item.headers);
     }
-    return rows;
+    if (!headers.length) return [];
+    return (await this.assembleReview(headers)).rows;
   }
 
   async syncReviewPage(query: SyncReviewQuery): Promise<SyncReviewPage> {
     const ppnReportDate = (await this.getSettings()).ppnReportDate || "";
+    const payload = await this.queueHeaders(query, ppnReportDate);
+    const assembled = await this.assembleReview(payload.headers);
+    return {
+      rows: assembled.rows,
+      total: payload.total,
+      page: payload.page,
+      pageSize: payload.pageSize,
+      facets: payload.facets,
+    };
+  }
+
+  /** Header page from sync_queue. Does not load order lines. */
+  private async queueHeaders(query: SyncReviewQuery, ppnReportDate: string): Promise<{
+    headers: Row[];
+    total: number;
+    page: number;
+    pageSize: number;
+    facets: { stores: string[]; channels: string[] };
+  }> {
     const { data, error } = await this.sb.rpc("sync_queue", {
       p: {
         page: query.page,
@@ -715,10 +739,8 @@ export class SupabaseStore implements DataStore {
     });
     if (error) explainQueue(error, "membaca antrian sync");
     const payload = (data ?? {}) as { rows?: unknown; total?: unknown; page?: unknown; pageSize?: unknown; facets?: { stores?: unknown; channels?: unknown } };
-    const headers = Array.isArray(payload.rows) ? payload.rows as Row[] : [];
-    const assembled = await this.assembleReview(headers);
     return {
-      rows: assembled.rows,
+      headers: Array.isArray(payload.rows) ? payload.rows as Row[] : [],
       total: num(payload.total),
       page: num(payload.page),
       pageSize: num(payload.pageSize, query.pageSize),
