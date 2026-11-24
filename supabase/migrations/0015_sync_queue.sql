@@ -14,8 +14,16 @@
 --   not deleted, and never synced (synced_at is null) or content_updated_at > synced_at.
 -- A current manual_delete that was never synced is omitted because reviewRow drops it
 -- (classifyOrder returns null). Reason, failure, and Accurate action labels match
--- src/lib/domain/sync-queue.ts. No extra index: a warm count and a 25-row page of the
--- current versions are already short sequential reads.
+-- src/lib/domain/sync-queue.ts. The queue count is still a sequential read of current
+-- versions. sync_batch_items_version_idx and order_syncs_no_pesanan_idx cover the
+-- failure lookup used when Alasan is set. order_syncs_one_success only includes
+-- status = 'tersinkron', so it does not cover gagal rows.
+
+create index if not exists sync_batch_items_version_idx
+  on public.sync_batch_items (version_id, created_at desc);
+
+create index if not exists order_syncs_no_pesanan_idx
+  on public.order_syncs (no_pesanan);
 
 create or replace function public.sync_money_changed(a numeric, b numeric)
 returns boolean
@@ -312,11 +320,11 @@ as $$
         or (v.content_updated_at is not null and v.content_updated_at > st.synced_at)
       )
       and not (v.source = 'manual_delete' and st.last_synced_version_id is null)
-      and (b.dfrom is null or v.order_day >= b.dfrom)
-      and (b.dto is null or v.order_day <= b.dto)
+      and (b.dfrom is null or coalesce(v.order_day, (v.tanggal at time zone 'UTC')::date) >= b.dfrom)
+      and (b.dto is null or coalesce(v.order_day, (v.tanggal at time zone 'UTC')::date) <= b.dto)
       and (
         coalesce(jsonb_array_length(p->'days'), 0) = 0
-        or to_char(v.order_day, 'YYYY-MM-DD') in (select jsonb_array_elements_text(p->'days'))
+        or to_char(coalesce(v.order_day, (v.tanggal at time zone 'UTC')::date), 'YYYY-MM-DD') in (select jsonb_array_elements_text(p->'days'))
       )
       and (
         b.q = ''
@@ -352,7 +360,7 @@ as $$
             st.last_synced_version_id is not null
             and exists (select 1 from public.order_versions synced where synced.id = st.last_synced_version_id)
           ) or nullif(coalesce(st.accurate_number, ''), '') is not null,
-          v.order_day,
+          coalesce(v.order_day, (v.tanggal at time zone 'UTC')::date),
           b.ppn,
           coalesce(v.loss_sibling, false)
         ) = b.action
@@ -380,12 +388,12 @@ as $$
       ), '[]'::jsonb)
     ),
     'rows', coalesce((
-      select jsonb_agg(to_jsonb(t) order by t.order_day desc nulls last, t.no_pesanan)
+      select jsonb_agg(to_jsonb(t) order by coalesce(t.order_day, (t.tanggal at time zone 'UTC')::date) desc nulls last, t.no_pesanan)
       from (
         select *
         from filtered
-        order by order_day desc nulls last, no_pesanan
-        offset (select page_no from bounds) * (select size from bounds)
+        order by coalesce(order_day, (tanggal at time zone 'UTC')::date) desc nulls last, no_pesanan
+        offset (select page_no::bigint from bounds) * (select size::bigint from bounds)
         limit (select size from bounds)
       ) t
     ), '[]'::jsonb)

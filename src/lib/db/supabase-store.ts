@@ -111,11 +111,20 @@ async function selectIn(sb: SupabaseClient, table: string, column: string, value
 
 class MissingOrderSyncs extends Error {}
 
+/** Pages past PostgREST's 1000-row cap. `id` keeps each page stable. */
+async function selectInAll(sb: SupabaseClient, table: string, column: string, values: string[], action: string): Promise<Row[]> {
+  return mapInChunks(values, async (slice) => eachPage(async (from, to) => {
+    const { data, error } = await sb.from(table).select("*").in(column, slice).order("id").range(from, to);
+    if (error) explain(error, action);
+    return (data ?? []) as Row[];
+  }));
+}
+
 /** Legacy order_syncs failures. Missing table is ignored; this app writes sync_batch_items. */
 async function orderSyncRows(sb: SupabaseClient, nos: string[]): Promise<Row[]> {
   try {
-    return await mapInChunks(nos, async (slice) => {
-      const { data, error } = await sb.from("order_syncs").select("no_pesanan,status,error,updated_at,synced_at").in("no_pesanan", slice);
+    return await mapInChunks(nos, async (slice) => eachPage(async (from, to) => {
+      const { data, error } = await sb.from("order_syncs").select("id,no_pesanan,status,error,updated_at,synced_at").in("no_pesanan", slice).order("id").range(from, to);
       if (error) {
         if (error.code === "42P01" || error.code === "PGRST205" || /order_syncs|does not exist|schema cache/i.test(error.message ?? "")) {
           throw new MissingOrderSyncs();
@@ -123,7 +132,7 @@ async function orderSyncRows(sb: SupabaseClient, nos: string[]): Promise<Row[]> 
         explain(error, "membaca order sync");
       }
       return (data ?? []) as Row[];
-    });
+    }));
   } catch (error) {
     if (error instanceof MissingOrderSyncs) return [];
     throw error;
@@ -707,8 +716,9 @@ export class SupabaseStore implements DataStore {
     if (error) explainQueue(error, "membaca antrian sync");
     const payload = (data ?? {}) as { rows?: unknown; total?: unknown; page?: unknown; pageSize?: unknown; facets?: { stores?: unknown; channels?: unknown } };
     const headers = Array.isArray(payload.rows) ? payload.rows as Row[] : [];
+    const assembled = await this.assembleReview(headers);
     return {
-      rows: await this.assembleReview(headers),
+      rows: assembled.rows,
       total: num(payload.total),
       page: num(payload.page),
       pageSize: num(payload.pageSize, query.pageSize),
@@ -726,8 +736,8 @@ export class SupabaseStore implements DataStore {
   }
 
   /** Lines, baselines, and failure rows are loaded only for these headers. */
-  private async assembleReview(headers: Row[]): Promise<SyncReviewRow[]> {
-    if (!headers.length) return [];
+  private async assembleReview(headers: Row[]): Promise<{ rows: SyncReviewRow[]; states: Map<string, SyncState> }> {
+    if (!headers.length) return { rows: [], states: new Map() };
     const embedded = headers.every((header) => "has_sync_state" in header);
     const stateByNo = new Map<string, SyncState>();
     if (embedded) {
@@ -751,7 +761,7 @@ export class SupabaseStore implements DataStore {
     const versionIds = headers.map((header) => str(header.id));
     const nos = headers.map((header) => str(header.no_pesanan));
     const [batchRows, legacyRows] = await Promise.all([
-      selectIn(this.sb, "sync_batch_items", "version_id", versionIds, "membaca kegagalan sync"),
+      selectInAll(this.sb, "sync_batch_items", "version_id", versionIds, "membaca kegagalan sync"),
       orderSyncRows(this.sb, nos),
     ]);
     const batchByVersion = new Map<string, SyncAttempt[]>();
@@ -785,7 +795,7 @@ export class SupabaseStore implements DataStore {
       });
       rows.push(row);
     }
-    return rows;
+    return { rows, states: stateByNo };
   }
 
   async prepareSync(nos: string[]): Promise<PreparedSync[]> {
@@ -796,16 +806,13 @@ export class SupabaseStore implements DataStore {
       if (error) explain(error, "membaca pesanan sync");
       return (data ?? []) as Row[];
     });
-    const rows = await this.assembleReview(headers);
+    const { rows, states } = await this.assembleReview(headers);
     const byNo = new Map(rows.map((row) => [row.noPesanan, row]));
-    const stateByNo = new Map<string, SyncState>();
-    const loaded = await selectIn(this.sb, "sync_states", "no_pesanan", wanted, "membaca status sync");
-    for (const row of loaded) stateByNo.set(str(row.no_pesanan), stateFrom(row));
     const prepared: PreparedSync[] = [];
     for (const no of wanted) {
       const row = byNo.get(no);
       if (!row) continue;
-      prepared.push({ row, state: stateByNo.get(no) ?? null });
+      prepared.push({ row, state: states.get(no) ?? null });
     }
     return prepared;
   }

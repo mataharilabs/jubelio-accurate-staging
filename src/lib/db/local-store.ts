@@ -426,12 +426,22 @@ export class LocalStore implements DataStore {
   }
 
   async countSyncQueue(): Promise<number> {
-    const rows = await this.syncReview([]);
-    return rows.filter((row) => needsAccurateSync({
-      dataStatus: row.current.dataStatus,
-      contentUpdatedAt: row.current.contentUpdatedAt,
-      syncedAt: row.syncedAt,
-    })).length;
+    const stateByNo = new Map(this.db.syncStates.map((row) => [row.noPesanan, row]));
+    const versionIds = new Set(this.db.versions.map((row) => row.id));
+    let count = 0;
+    for (const version of this.db.versions) {
+      if (!version.isCurrent) continue;
+      const state = stateByNo.get(version.noPesanan) ?? null;
+      const baseline = Boolean(state?.lastSyncedVersionId && versionIds.has(state.lastSyncedVersionId));
+      if (version.source === "manual_delete" && !baseline) continue;
+      if (!needsAccurateSync({
+        dataStatus: version.dataStatus,
+        contentUpdatedAt: version.contentUpdatedAt,
+        syncedAt: state?.syncedAt,
+      })) continue;
+      count += 1;
+    }
+    return count;
   }
 
   async prepareSync(nos: string[]): Promise<PreparedSync[]> {

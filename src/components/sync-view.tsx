@@ -35,6 +35,21 @@ function problem(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Permintaan gagal.";
 }
 
+function queueItem(row: SyncReviewRow, ppn: string | null): QueueItem {
+  const everSynced = Boolean(row.baseline || row.accurateNumber);
+  return {
+    row,
+    intent: accurateIntent({
+      status: row.current.status,
+      everSynced,
+      orderDay: row.day,
+      ppnReportDate: ppn,
+      lossSibling: Boolean(row.current.lossSibling),
+    }),
+    why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)),
+  };
+}
+
 function InvoicePreview({ rows }: { rows: { noPesanan: string; total: number }[] }) {
   if (!rows.length) return null;
   return (
@@ -84,6 +99,8 @@ export function SyncView() {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [confirm, setConfirm] = useState<string[] | null>(null);
   const requestRef = useRef(0);
+  const metaRef = useRef<SyncMeta | null>(null);
+  const loadRef = useRef<(opts?: { keepError?: boolean }) => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQ(q), 300);
@@ -110,33 +127,17 @@ export function SyncView() {
       if (id !== requestRef.current) return;
       if (metaResult.status === "fulfilled") setMeta(metaResult.value);
       if (historyResult.status === "fulfilled") setLog(historyResult.value.log ?? []);
-      const ppn = metaResult.status === "fulfilled" ? metaResult.value.ppnReportDate || null : null;
+      const ppn = (metaResult.status === "fulfilled" ? metaResult.value.ppnReportDate : metaRef.current?.ppnReportDate) || null;
       if (reviewResult.status === "fulfilled") {
         setRows(reviewResult.value.rows);
         setTotal(reviewResult.value.total);
         setStores(reviewResult.value.facets?.stores ?? []);
         setChannels(reviewResult.value.facets?.channels ?? []);
-        const fresh = new Map(reviewResult.value.rows.map((row) => {
-          const everSynced = Boolean(row.baseline || row.accurateNumber);
-          const item: QueueItem = {
-            row,
-            intent: accurateIntent({
-              status: row.current.status,
-              everSynced,
-              orderDay: row.day,
-              ppnReportDate: ppn,
-              lossSibling: Boolean(row.current.lossSibling),
-            }),
-            why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)),
-          };
-          return [row.noPesanan, item] as const;
-        }));
+        const fresh = new Map(reviewResult.value.rows.map((row) => [row.noPesanan, queueItem(row, ppn)] as const));
         setSelected((current) => {
           if (!current.size) return current;
-          const next = new Map(current);
-          for (const [no, item] of fresh) {
-            if (next.has(no)) next.set(no, item);
-          }
+          const next = new Map<string, QueueItem>();
+          for (const [no, item] of current) next.set(no, fresh.get(no) ?? queueItem(item.row, ppn));
           return next;
         });
       } else {
@@ -155,6 +156,9 @@ export function SyncView() {
     }
   }, [action, channel, debouncedQ, from, page, pageSize, reason, store, to]);
 
+  metaRef.current = meta;
+  loadRef.current = load;
+
   useEffect(() => {
     if (!hydrated) return;
     load().catch((err: Error) => setError(err.message));
@@ -166,17 +170,7 @@ export function SyncView() {
   }, [page, pageSize, total]);
 
   const ppn = meta?.ppnReportDate || null;
-  const described = useMemo(() => rows.map((row) => {
-    const everSynced = Boolean(row.baseline || row.accurateNumber);
-    const intent = accurateIntent({
-      status: row.current.status,
-      everSynced,
-      orderDay: row.day,
-      ppnReportDate: ppn,
-      lossSibling: Boolean(row.current.lossSibling),
-    });
-    return { row, intent, why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)) };
-  }), [rows, ppn]);
+  const described = useMemo(() => rows.map((row) => queueItem(row, ppn)), [rows, ppn]);
 
   const logPage = useClientPage(log, "sync-log", 50);
   const chosen = [...selected.values()];
@@ -221,7 +215,7 @@ export function SyncView() {
       setMessage(reportedOk(`${nos.length} pesanan diabaikan. Tgl Synced diisi dan pesanan keluar dari antrean.`));
       setSelected(new Map());
       setConfirm(null);
-      await load();
+      await loadRef.current();
     } catch (err) {
       setError(reported(err, "Gagal mengabaikan."));
     } finally {
@@ -237,11 +231,11 @@ export function SyncView() {
       setMessage(reportedOk("Sync selesai."));
       setConfirm(null);
       setSelected(new Map());
-      await load();
+      await loadRef.current();
     } catch (err) {
       setError(reported(err, "Sync gagal."));
       setConfirm(null);
-      await load({ keepError: true }).catch(() => undefined);
+      await loadRef.current({ keepError: true }).catch(() => undefined);
     } finally {
       setBusy(false);
     }
