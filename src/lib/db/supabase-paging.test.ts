@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commitWithRollback, eachPage, pickLatestRows } from "@/lib/db/supabase-paging";
+import { commitWithRollback, eachPage, mapInChunks, pickLatestRows } from "@/lib/db/supabase-paging";
 
 describe("supabase paging", () => {
   it("keeps reading after a full page so existing orders are not mistaken for new", async () => {
@@ -35,6 +35,25 @@ describe("supabase paging", () => {
       { no_pesanan: "A", version_no: "10" },
       { no_pesanan: "B", version_no: 1 },
     ]);
+  });
+
+  it("loads id chunks in parallel groups instead of one request at a time", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const seen: string[][] = [];
+    const values = Array.from({ length: 20 }, (_, index) => String(index));
+    const rows = await mapInChunks(values, async (slice) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      seen.push(slice);
+      return slice;
+    }, 4, 3);
+    expect(rows).toEqual(values);
+    expect(seen.map((slice) => slice.length)).toEqual([4, 4, 4, 4, 4]);
+    expect(maxActive).toBeLessThanOrEqual(3);
+    expect(maxActive).toBeGreaterThan(1);
   });
 
   it("restores completed steps in reverse when a later write fails", async () => {

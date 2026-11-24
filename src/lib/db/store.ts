@@ -30,6 +30,27 @@ export type PreparedSync = {
   state: SyncState | null;
 };
 
+export type SyncReviewQuery = {
+  page: number;
+  pageSize: number;
+  q?: string;
+  from?: string;
+  to?: string;
+  store?: string;
+  channel?: string;
+  reason?: string;
+  action?: string;
+  days?: string[];
+};
+
+export type SyncReviewPage = {
+  rows: SyncReviewRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  facets: { stores: string[]; channels: string[] };
+};
+
 export type SyncWrite = {
   noPesanan: string;
   versionId: string;
@@ -58,6 +79,8 @@ export interface DataStore {
   importCleanLines(lines: CleanLine[], filename: string, source: "clean" | "sample", by: string | null, duplicate?: "overwrite" | "skip"): Promise<ImportResult>;
   importRawLines(lines: CleanLine[], cancels: { noPesanan: string; status: string; day: string | null; tanggal: string | null }[], filename: string, by: string | null, range: { from: string | null; to: string | null }, source?: "raw" | "api", duplicate?: "overwrite" | "skip"): Promise<ImportResult>;
   syncReview(days: string[]): Promise<SyncReviewRow[]>;
+  syncReviewPage(query: SyncReviewQuery): Promise<SyncReviewPage>;
+  countSyncQueue(): Promise<number>;
   prepareSync(nos: string[]): Promise<PreparedSync[]>;
   setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void>;
   recordSync(by: string, items: SyncWrite[], note: string): Promise<SyncBatch>;

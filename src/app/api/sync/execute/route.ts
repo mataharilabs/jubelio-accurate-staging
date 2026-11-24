@@ -3,6 +3,8 @@ import { recordAudit } from "@/lib/access/store";
 import { fail, requirePermission } from "@/lib/http";
 import { executeSync } from "@/lib/sync-service";
 
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   try {
     const session = await requirePermission("sync.execute");

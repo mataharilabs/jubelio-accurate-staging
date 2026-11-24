@@ -6,11 +6,12 @@ import { planCancels, planImport } from "@/lib/domain/plan";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { matchesOrderFilter, matchesOrderScope } from "@/lib/domain/order-filter";
 import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
-import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion } from "@/lib/domain/phase3";
+import { buildReturnVersions, canSoftDeleteOrder, needsAccurateSync, syncFailureForVersion } from "@/lib/domain/phase3";
+import { pageSyncReview } from "@/lib/domain/sync-queue";
 import { reportOf } from "@/lib/domain/aggregate";
 import { attachMarketing } from "@/lib/marketing/dashboard";
 import { reviewRow } from "@/lib/domain/review-rows";
-import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
+import type { DataStore, PreparedSync, SyncReviewPage, SyncReviewQuery, SyncWrite } from "@/lib/db/store";
 import type {
   AccurateCustomerCache,
   AccurateTokens,
@@ -386,15 +387,23 @@ export class LocalStore implements DataStore {
 
   async syncReview(days: string[]): Promise<SyncReviewRow[]> {
     const wanted = new Set(days);
+    const stateByNo = new Map(this.db.syncStates.map((row) => [row.noPesanan, row]));
+    const versionById = new Map(this.db.versions.map((row) => [row.id, row]));
+    const attemptsByNo = new Map<string, typeof this.db.syncItems>();
+    for (const item of this.db.syncItems) {
+      const list = attemptsByNo.get(item.noPesanan) ?? [];
+      list.push(item);
+      attemptsByNo.set(item.noPesanan, list);
+    }
     const rows: SyncReviewRow[] = [];
     for (const version of this.db.versions) {
       if (!version.isCurrent) continue;
       if (wanted.size && !wanted.has(version.day)) continue;
-      const state = this.db.syncStates.find((row) => row.noPesanan === version.noPesanan) ?? null;
-      const synced = state?.lastSyncedVersionId ? this.db.versions.find((row) => row.id === state.lastSyncedVersionId) ?? null : null;
+      const state = stateByNo.get(version.noPesanan) ?? null;
+      const synced = state?.lastSyncedVersionId ? versionById.get(state.lastSyncedVersionId) ?? null : null;
       const row = reviewRow(version, synced, state);
       if (!row) continue;
-      const attempts = this.db.syncItems.filter((item) => item.noPesanan === version.noPesanan);
+      const attempts = attemptsByNo.get(version.noPesanan) ?? [];
       row.lastSyncError = syncFailureForVersion({
         versionId: version.id,
         versionCreatedAt: version.createdAt,
@@ -410,13 +419,70 @@ export class LocalStore implements DataStore {
     return rows.sort((a, b) => b.day.localeCompare(a.day) || a.noPesanan.localeCompare(b.noPesanan));
   }
 
+  async syncReviewPage(query: SyncReviewQuery): Promise<SyncReviewPage> {
+    const ppn = (await this.getSettings()).ppnReportDate || null;
+    const rows = await this.syncReview(query.days ?? []);
+    return pageSyncReview(rows, query, ppn);
+  }
+
+  async countSyncQueue(): Promise<number> {
+    const stateByNo = new Map(this.db.syncStates.map((row) => [row.noPesanan, row]));
+    const versionIds = new Set(this.db.versions.map((row) => row.id));
+    let count = 0;
+    for (const version of this.db.versions) {
+      if (!version.isCurrent) continue;
+      const state = stateByNo.get(version.noPesanan) ?? null;
+      const baseline = Boolean(state?.lastSyncedVersionId && versionIds.has(state.lastSyncedVersionId));
+      if (version.source === "manual_delete" && !baseline) continue;
+      if (!needsAccurateSync({
+        dataStatus: version.dataStatus,
+        contentUpdatedAt: version.contentUpdatedAt,
+        syncedAt: state?.syncedAt,
+      })) continue;
+      count += 1;
+    }
+    return count;
+  }
+
   async prepareSync(nos: string[]): Promise<PreparedSync[]> {
-    const review = await this.syncReview([]);
-    const wanted = new Set(nos);
-    return review.filter((row) => wanted.has(row.noPesanan)).map((row) => ({
-      row,
-      state: this.db.syncStates.find((item) => item.noPesanan === row.noPesanan) ?? null,
-    }));
+    const wanted = [...new Set(nos.filter(Boolean))];
+    if (!wanted.length) return [];
+    const wantedSet = new Set(wanted);
+    const stateByNo = new Map(this.db.syncStates.map((row) => [row.noPesanan, row]));
+    const versionById = new Map(this.db.versions.map((row) => [row.id, row]));
+    const currentByNo = new Map<string, OrderVersion>();
+    for (const version of this.db.versions) {
+      if (version.isCurrent && wantedSet.has(version.noPesanan)) currentByNo.set(version.noPesanan, version);
+    }
+    const attemptsByNo = new Map<string, typeof this.db.syncItems>();
+    for (const item of this.db.syncItems) {
+      if (!wantedSet.has(item.noPesanan)) continue;
+      const list = attemptsByNo.get(item.noPesanan) ?? [];
+      list.push(item);
+      attemptsByNo.set(item.noPesanan, list);
+    }
+    const prepared: PreparedSync[] = [];
+    for (const no of wanted) {
+      const version = currentByNo.get(no);
+      if (!version) continue;
+      const state = stateByNo.get(no) ?? null;
+      const synced = state?.lastSyncedVersionId ? versionById.get(state.lastSyncedVersionId) ?? null : null;
+      const row = reviewRow(version, synced, state);
+      if (!row) continue;
+      const attempts = attemptsByNo.get(no) ?? [];
+      row.lastSyncError = syncFailureForVersion({
+        versionId: version.id,
+        versionCreatedAt: version.createdAt,
+        batchItems: attempts.map((item) => ({
+          at: item.createdAt,
+          status: item.status,
+          error: item.error,
+          versionId: item.versionId,
+        })),
+      });
+      prepared.push({ row, state });
+    }
+    return prepared;
   }
 
   async setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void> {

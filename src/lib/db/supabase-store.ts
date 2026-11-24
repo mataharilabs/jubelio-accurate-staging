@@ -7,7 +7,7 @@ import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder, syncFailureForVersion, type SyncAttempt } from "@/lib/domain/phase3";
 import { planCancels, planImport } from "@/lib/domain/plan";
 import { reviewRow } from "@/lib/domain/review-rows";
-import type { DataStore, PreparedSync, SyncWrite } from "@/lib/db/store";
+import type { DataStore, PreparedSync, SyncReviewPage, SyncReviewQuery, SyncWrite } from "@/lib/db/store";
 import type {
   AccurateCustomerCache,
   AccurateTokens,
@@ -36,7 +36,7 @@ import type {
   VersionSource,
 } from "@/lib/db/types";
 import { writeGeoMaps } from "@/lib/db/geo-maps";
-import { commitWithRollback, eachPage, pickLatestRows, supabaseFetch, type RollbackStep } from "@/lib/db/supabase-paging";
+import { commitWithRollback, eachPage, mapInChunks, pickLatestRows, supabaseFetch, type RollbackStep } from "@/lib/db/supabase-paging";
 import { shouldPersistImport } from "@/lib/jubelio/schedule";
 import { accurateConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { AppError } from "@/lib/errors";
@@ -100,33 +100,54 @@ async function must<T>(promise: PromiseLike<{ data: T; error: { message?: string
   return data;
 }
 
-/** Chunked `.in` filter. One request past 1000 matches is truncated, and a long `in.(...)` exceeds the URL limit. */
+/** Chunked `.in` filter. Chunks of 200 run up to 8 at a time so a long id list does not become one slow sequence. */
 async function selectIn(sb: SupabaseClient, table: string, column: string, values: string[], action: string): Promise<Row[]> {
-  const unique = [...new Set(values.filter(Boolean))];
-  const rows: Row[] = [];
-  for (let i = 0; i < unique.length; i += 80) {
-    const slice = unique.slice(i, i + 80);
+  return mapInChunks(values, async (slice) => {
     const { data, error } = await sb.from(table).select("*").in(column, slice);
     if (error) explain(error, action);
-    rows.push(...((data ?? []) as Row[]));
-  }
-  return rows;
+    return (data ?? []) as Row[];
+  });
+}
+
+class MissingOrderSyncs extends Error {}
+
+/** Pages past PostgREST's 1000-row cap. `id` keeps each page stable. */
+async function selectInAll(sb: SupabaseClient, table: string, column: string, values: string[], action: string): Promise<Row[]> {
+  return mapInChunks(values, async (slice) => eachPage(async (from, to) => {
+    const { data, error } = await sb.from(table).select("*").in(column, slice).order("id").range(from, to);
+    if (error) explain(error, action);
+    return (data ?? []) as Row[];
+  }));
 }
 
 /** Legacy order_syncs failures. Missing table is ignored; this app writes sync_batch_items. */
 async function orderSyncRows(sb: SupabaseClient, nos: string[]): Promise<Row[]> {
-  const unique = [...new Set(nos.filter(Boolean))];
-  const rows: Row[] = [];
-  for (let i = 0; i < unique.length; i += 80) {
-    const slice = unique.slice(i, i + 80);
-    const { data, error } = await sb.from("order_syncs").select("no_pesanan,status,error,updated_at,synced_at").in("no_pesanan", slice);
-    if (error) {
-      if (error.code === "42P01" || error.code === "PGRST205" || /order_syncs|does not exist|schema cache/i.test(error.message ?? "")) return rows;
-      explain(error, "membaca order sync");
-    }
-    rows.push(...((data ?? []) as Row[]));
+  try {
+    return await mapInChunks(nos, async (slice) => eachPage(async (from, to) => {
+      const { data, error } = await sb.from("order_syncs").select("id,no_pesanan,status,error,updated_at,synced_at").in("no_pesanan", slice).order("id").range(from, to);
+      if (error) {
+        if (error.code === "42P01" || error.code === "PGRST205" || /order_syncs|does not exist|schema cache/i.test(error.message ?? "")) {
+          throw new MissingOrderSyncs();
+        }
+        explain(error, "membaca order sync");
+      }
+      return (data ?? []) as Row[];
+    }));
+  } catch (error) {
+    if (error instanceof MissingOrderSyncs) return [];
+    throw error;
   }
-  return rows;
+}
+
+function explainQueue(error: { message?: string; code?: string } | null, action: string): never {
+  const missing = error?.code === "PGRST202" || error?.code === "42883" || /sync_queue|does not exist|schema cache/i.test(error?.message ?? "");
+  if (missing) throw new AppError("Jalankan supabase/migrations/0015_sync_queue.sql di SQL Editor.");
+  throw new AppError(error?.message || `Gagal ${action}.`);
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "")).filter(Boolean);
 }
 
 function lineFrom(row: Row): OrderLine {
@@ -228,27 +249,22 @@ export class SupabaseStore implements DataStore {
   }
 
   private async linesFor(versionIds: string[]): Promise<Map<string, OrderLine[]>> {
+    const grouped = new Map<string, Row[]>();
+    const data = await mapInChunks(versionIds, async (slice) => eachPage(async (from, to) => {
+      const { data: page, error } = await this.sb.from("order_lines").select("*").in("version_id", slice).order("id").range(from, to);
+      if (error) explain(error, "membaca baris");
+      return (page ?? []) as Row[];
+    }));
+    for (const row of data) {
+      const id = str(row.version_id);
+      const list = grouped.get(id) ?? [];
+      list.push(row);
+      grouped.set(id, list);
+    }
     const map = new Map<string, OrderLine[]>();
-    for (let i = 0; i < versionIds.length; i += 100) {
-      const slice = versionIds.slice(i, i + 100);
-      const data = await eachPage(async (from, to) => {
-        const { data: page, error } = await this.sb.from("order_lines").select("*").in("version_id", slice).order("id").range(from, to);
-        if (error) explain(error, "membaca baris");
-        return (page ?? []) as Row[];
-      });
-      const grouped = new Map<string, Row[]>();
-      for (const row of data) {
-        const id = str(row.version_id);
-        const list = grouped.get(id) ?? [];
-        list.push(row);
-        grouped.set(id, list);
-      }
-      for (const [id, rows] of grouped) {
-        rows.sort((a, b) => num(a.line_no) - num(b.line_no));
-        const list = map.get(id) ?? [];
-        list.push(...rows.map(lineFrom));
-        map.set(id, list);
-      }
+    for (const [id, rows] of grouped) {
+      rows.sort((a, b) => num(a.line_no) - num(b.line_no));
+      map.set(id, rows.map(lineFrom));
     }
     return map;
   }
@@ -269,17 +285,11 @@ export class SupabaseStore implements DataStore {
 
   /** Latest version of each order, paging past PostgREST's 1000-row cap. Includes a non-current row when a failed import cleared is_current. */
   private async latestForOrders(orderNos: string[]): Promise<Map<string, OrderVersion>> {
-    const unique = [...new Set(orderNos.filter(Boolean))];
-    const headers: Row[] = [];
-    for (let i = 0; i < unique.length; i += 80) {
-      const slice = unique.slice(i, i + 80);
-      const page = await eachPage(async (from, to) => {
-        const { data, error } = await this.sb.from("order_versions").select("*").in("no_pesanan", slice).order("id").range(from, to);
-        if (error) explain(error, "membaca versi pesanan");
-        return (data ?? []) as Row[];
-      });
-      headers.push(...page);
-    }
+    const headers = await mapInChunks(orderNos, async (slice) => eachPage(async (from, to) => {
+      const { data, error } = await this.sb.from("order_versions").select("*").in("no_pesanan", slice).order("id").range(from, to);
+      if (error) explain(error, "membaca versi pesanan");
+      return (data ?? []) as Row[];
+    }));
     const versions = await this.hydrate(pickLatestRows(headers));
     return new Map(versions.map((version) => [version.noPesanan, version]));
   }
@@ -676,25 +686,84 @@ export class SupabaseStore implements DataStore {
   }
 
   async syncReview(days: string[]): Promise<SyncReviewRow[]> {
-    const data = await eachPage(async (from, to) => {
-      let query = this.sb.from("order_versions").select("*").eq("is_current", true);
-      if (days.length) query = query.in("order_day", days);
-      const { data: page, error } = await query.order("id").range(from, to);
-      if (error) explain(error, "membaca antrian sync");
-      return (page ?? []) as Row[];
+    const rows: SyncReviewRow[] = [];
+    const pageSize = 200;
+    for (let page = 0; page < 1000; page += 1) {
+      const result = await this.syncReviewPage({ page, pageSize, days });
+      rows.push(...result.rows);
+      if (result.rows.length === 0 || (page + 1) * pageSize >= result.total) break;
+    }
+    return rows;
+  }
+
+  async syncReviewPage(query: SyncReviewQuery): Promise<SyncReviewPage> {
+    const ppnReportDate = (await this.getSettings()).ppnReportDate || "";
+    const { data, error } = await this.sb.rpc("sync_queue", {
+      p: {
+        page: query.page,
+        pageSize: query.pageSize,
+        q: query.q ?? "",
+        from: query.from ?? "",
+        to: query.to ?? "",
+        store: query.store ?? "",
+        channel: query.channel ?? "",
+        reason: query.reason ?? "",
+        action: query.action ?? "",
+        days: query.days ?? [],
+        ppnReportDate,
+      },
     });
-    const versions = await this.hydrate(data);
-    const nos = versions.map((version) => version.noPesanan);
-    const stateRows = await selectIn(this.sb, "sync_states", "no_pesanan", nos, "membaca status sync");
-    const syncedIds = stateRows.map((row) => strOrNull(row.last_synced_version_id)).filter((id): id is string => Boolean(id));
-    const missing = syncedIds.filter((id) => !versions.some((version) => version.id === id));
-    const extra = missing.length ? await this.hydrate(await selectIn(this.sb, "order_versions", "id", missing, "membaca versi tersinkron")) : [];
-    const byId = new Map([...versions, ...extra].map((version) => [version.id, version]));
-    const versionIds = versions.map((version) => version.id);
-    const batchRows = versionIds.length
-      ? await selectIn(this.sb, "sync_batch_items", "version_id", versionIds, "membaca kegagalan sync")
+    if (error) explainQueue(error, "membaca antrian sync");
+    const payload = (data ?? {}) as { rows?: unknown; total?: unknown; page?: unknown; pageSize?: unknown; facets?: { stores?: unknown; channels?: unknown } };
+    const headers = Array.isArray(payload.rows) ? payload.rows as Row[] : [];
+    const assembled = await this.assembleReview(headers);
+    return {
+      rows: assembled.rows,
+      total: num(payload.total),
+      page: num(payload.page),
+      pageSize: num(payload.pageSize, query.pageSize),
+      facets: {
+        stores: stringList(payload.facets?.stores),
+        channels: stringList(payload.facets?.channels),
+      },
+    };
+  }
+
+  async countSyncQueue(): Promise<number> {
+    const { data, error } = await this.sb.rpc("sync_queue_count");
+    if (error) explainQueue(error, "menghitung antrian sync");
+    return num(data);
+  }
+
+  /** Lines, baselines, and failure rows are loaded only for these headers. */
+  private async assembleReview(headers: Row[]): Promise<{ rows: SyncReviewRow[]; states: Map<string, SyncState> }> {
+    if (!headers.length) return { rows: [], states: new Map() };
+    const embedded = headers.every((header) => "has_sync_state" in header);
+    const stateByNo = new Map<string, SyncState>();
+    if (embedded) {
+      for (const header of headers) {
+        if (header.has_sync_state === true) stateByNo.set(str(header.no_pesanan), stateFrom(header));
+      }
+    } else {
+      const loaded = await selectIn(this.sb, "sync_states", "no_pesanan", headers.map((header) => str(header.no_pesanan)), "membaca status sync");
+      for (const row of loaded) stateByNo.set(str(row.no_pesanan), stateFrom(row));
+    }
+    const have = new Set(headers.map((header) => str(header.id)));
+    const missingSynced = [...new Set([...stateByNo.values()]
+      .map((state) => state.lastSyncedVersionId)
+      .filter((id): id is string => Boolean(id))
+      .filter((id) => !have.has(id)))];
+    const extra = missingSynced.length
+      ? await selectIn(this.sb, "order_versions", "id", missingSynced, "membaca versi tersinkron")
       : [];
-    const legacyRows = await orderSyncRows(this.sb, nos);
+    const versions = await this.hydrate([...headers, ...extra]);
+    const byId = new Map(versions.map((version) => [version.id, version]));
+    const versionIds = headers.map((header) => str(header.id));
+    const nos = headers.map((header) => str(header.no_pesanan));
+    const [batchRows, legacyRows] = await Promise.all([
+      selectInAll(this.sb, "sync_batch_items", "version_id", versionIds, "membaca kegagalan sync"),
+      orderSyncRows(this.sb, nos),
+    ]);
     const batchByVersion = new Map<string, SyncAttempt[]>();
     for (const item of batchRows) {
       const versionId = strOrNull(item.version_id);
@@ -711,9 +780,10 @@ export class SupabaseStore implements DataStore {
       legacyByOrder.set(noPesanan, list);
     }
     const rows: SyncReviewRow[] = [];
-    for (const version of versions) {
-      const stateRow = stateRows.find((row) => str(row.no_pesanan) === version.noPesanan);
-      const state = stateRow ? stateFrom(stateRow) : null;
+    for (const header of headers) {
+      const version = byId.get(str(header.id));
+      if (!version) continue;
+      const state = stateByNo.get(version.noPesanan) ?? null;
       const synced = state?.lastSyncedVersionId ? byId.get(state.lastSyncedVersionId) ?? null : null;
       const row = reviewRow(version, synced, state);
       if (!row) continue;
@@ -725,17 +795,26 @@ export class SupabaseStore implements DataStore {
       });
       rows.push(row);
     }
-    return rows.sort((a, b) => b.day.localeCompare(a.day) || a.noPesanan.localeCompare(b.noPesanan));
+    return { rows, states: stateByNo };
   }
 
   async prepareSync(nos: string[]): Promise<PreparedSync[]> {
-    const review = await this.syncReview([]);
-    const wanted = new Set(nos);
-    const states = await selectIn(this.sb, "sync_states", "no_pesanan", nos, "membaca status sync");
-    return review.filter((row) => wanted.has(row.noPesanan)).map((row) => ({
-      row,
-      state: states.map(stateFrom).find((item) => item.noPesanan === row.noPesanan) ?? null,
-    }));
+    const wanted = [...new Set(nos.filter(Boolean))];
+    if (!wanted.length) return [];
+    const headers = await mapInChunks(wanted, async (slice) => {
+      const { data, error } = await this.sb.from("order_versions").select("*").in("no_pesanan", slice).eq("is_current", true);
+      if (error) explain(error, "membaca pesanan sync");
+      return (data ?? []) as Row[];
+    });
+    const { rows, states } = await this.assembleReview(headers);
+    const byNo = new Map(rows.map((row) => [row.noPesanan, row]));
+    const prepared: PreparedSync[] = [];
+    for (const no of wanted) {
+      const row = byNo.get(no);
+      if (!row) continue;
+      prepared.push({ row, state: states.get(no) ?? null });
+    }
+    return prepared;
   }
 
   async setDecision(noPesanan: string, decision: "confirmed" | "ignored", by: string): Promise<void> {
