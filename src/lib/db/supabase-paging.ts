@@ -1,6 +1,29 @@
 /** PostgREST returns at most 1000 rows unless the query uses range. */
 export const SUPABASE_PAGE = 1000;
 export const SUPABASE_TIMEOUT_MS = 30_000;
+/** `.in` filters stay under the URL limit and run a handful of chunks at once. */
+export const SUPABASE_IN_CHUNK = 200;
+export const SUPABASE_IN_PARALLEL = 8;
+
+export async function mapInChunks<T>(
+  values: string[],
+  run: (slice: string[]) => Promise<T[]>,
+  chunkSize = SUPABASE_IN_CHUNK,
+  parallel = SUPABASE_IN_PARALLEL,
+): Promise<T[]> {
+  const unique = [...new Set(values.filter(Boolean))];
+  if (!unique.length) return [];
+  const size = Math.max(1, chunkSize);
+  const width = Math.max(1, parallel);
+  const slices: string[][] = [];
+  for (let index = 0; index < unique.length; index += size) slices.push(unique.slice(index, index + size));
+  const rows: T[] = [];
+  for (let index = 0; index < slices.length; index += width) {
+    const parts = await Promise.all(slices.slice(index, index + width).map((slice) => run(slice)));
+    for (const part of parts) rows.push(...part);
+  }
+  return rows;
+}
 
 export async function eachPage<T>(load: (from: number, to: number) => Promise<T[]>, pageSize = SUPABASE_PAGE): Promise<T[]> {
   if (pageSize < 1) throw new Error("pageSize must be positive");

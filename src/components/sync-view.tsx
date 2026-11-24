@@ -1,22 +1,38 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionButton, reported, reportedOk, TableShell } from "@/components/ui/feedback";
-import { Pager, useClientPage } from "@/components/ui/pager";
+import { Pager, useClientPage, usePageSize } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { AppMeta, SyncReviewRow } from "@/lib/db/types";
+import type { SyncReviewPage } from "@/lib/db/store";
 import { invoiceTotals } from "@/lib/accurate/invoice";
-import { accurateIntent, needsAccurateSync, SYNC_FAILED_REASON, syncReason } from "@/lib/domain/phase3";
+import { accurateIntent, SYNC_FAILED_REASON, syncReason } from "@/lib/domain/phase3";
 import { rp } from "@/lib/format";
 
 type LogRow = { at: string; actor: string | null; action: string; noPesanan: string; note: string };
 type SyncMeta = AppMeta & { salesPush?: boolean; accurateDatabaseId?: string };
+type QueueItem = { row: SyncReviewRow; intent: ReturnType<typeof accurateIntent>; why: string };
 
 const REASONS = ["Belum pernah sync", "Gagal sync", "Data berubah", "Status jadi RETURNED", "Status jadi CANCELED"];
+const ACTIONS = [
+  "Buat penjualan",
+  "Buat penjualan (Barang Hilang)",
+  "Ubah penjualan",
+  "Hapus penjualan",
+  "Buat Retur penjualan",
+  "Tidak diproses otomatis",
+  "Tidak dikirim (cancel sebelum sync)",
+  "Tidak dikirim (retur sebelum sync)",
+];
 
 function stamp(value?: string | null) {
   if (!value) return "—";
   return value.slice(0, 16).replace("T", " ");
+}
+
+function problem(reason: unknown): string {
+  return reason instanceof Error ? reason.message : "Permintaan gagal.";
 }
 
 function InvoicePreview({ rows }: { rows: { noPesanan: string; total: number }[] }) {
@@ -45,48 +61,109 @@ function InvoicePreview({ rows }: { rows: { noPesanan: string; total: number }[]
 export function SyncView() {
   const [meta, setMeta] = useState<SyncMeta | null>(null);
   const [rows, setRows] = useState<SyncReviewRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [stores, setStores] = useState<string[]>([]);
+  const [channels, setChannels] = useState<string[]>([]);
   const [log, setLog] = useState<LogRow[]>([]);
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [store, setStore] = useState("");
   const [channel, setChannel] = useState("");
   const [reason, setReason] = useState("");
   const [action, setAction] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize, hydrated] = usePageSize("sync-queue", 25);
   const [loading, setLoading] = useState(true);
   const [alias, setAlias] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Map<string, QueueItem>>(new Map());
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [confirm, setConfirm] = useState<string[] | null>(null);
-
-  async function load() {
-    setLoading(true);
-    try {
-      const [metaRow, review, history] = await Promise.all([
-        api<SyncMeta>("/api/meta"),
-        api<{ rows: SyncReviewRow[] }>("/api/sync/review"),
-        api<{ log?: LogRow[] }>("/api/sync/history"),
-      ]);
-      setMeta(metaRow);
-      setLog(history.log ?? []);
-    const visible = review.rows.filter((row) => needsAccurateSync({
-      dataStatus: row.current.dataStatus,
-      contentUpdatedAt: row.current.contentUpdatedAt,
-      syncedAt: row.syncedAt,
-    }));
-      setRows(visible);
-      setSelected((current) => new Set([...current].filter((no) => visible.some((row) => row.noPesanan === no))));
-    } finally {
-      setLoading(false);
-    }
-  }
+  const requestRef = useRef(0);
 
   useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(timer);
+  }, [q]);
+
+  const load = useCallback(async (opts?: { keepError?: boolean }) => {
+    const id = ++requestRef.current;
+    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (debouncedQ) params.set("q", debouncedQ);
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (store) params.set("store", store);
+    if (channel) params.set("channel", channel);
+    if (reason) params.set("reason", reason);
+    if (action) params.set("action", action);
+    try {
+      const [metaResult, reviewResult, historyResult] = await Promise.allSettled([
+        api<SyncMeta>("/api/meta"),
+        api<SyncReviewPage>(`/api/sync/review?${params}`),
+        api<{ log?: LogRow[] }>("/api/sync/history"),
+      ]);
+      if (id !== requestRef.current) return;
+      if (metaResult.status === "fulfilled") setMeta(metaResult.value);
+      if (historyResult.status === "fulfilled") setLog(historyResult.value.log ?? []);
+      const ppn = metaResult.status === "fulfilled" ? metaResult.value.ppnReportDate || null : null;
+      if (reviewResult.status === "fulfilled") {
+        setRows(reviewResult.value.rows);
+        setTotal(reviewResult.value.total);
+        setStores(reviewResult.value.facets?.stores ?? []);
+        setChannels(reviewResult.value.facets?.channels ?? []);
+        const fresh = new Map(reviewResult.value.rows.map((row) => {
+          const everSynced = Boolean(row.baseline || row.accurateNumber);
+          const item: QueueItem = {
+            row,
+            intent: accurateIntent({
+              status: row.current.status,
+              everSynced,
+              orderDay: row.day,
+              ppnReportDate: ppn,
+              lossSibling: Boolean(row.current.lossSibling),
+            }),
+            why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)),
+          };
+          return [row.noPesanan, item] as const;
+        }));
+        setSelected((current) => {
+          if (!current.size) return current;
+          const next = new Map(current);
+          for (const [no, item] of fresh) {
+            if (next.has(no)) next.set(no, item);
+          }
+          return next;
+        });
+      } else {
+        setRows([]);
+        setTotal(0);
+      }
+      const problems = [
+        reviewResult.status === "rejected" ? problem(reviewResult.reason) : "",
+        metaResult.status === "rejected" ? problem(metaResult.reason) : "",
+        historyResult.status === "rejected" ? problem(historyResult.reason) : "",
+      ].filter(Boolean);
+      if (problems.length) setError(problems.join(" "));
+      else if (!opts?.keepError) setError(null);
+    } finally {
+      if (id === requestRef.current) setLoading(false);
+    }
+  }, [action, channel, debouncedQ, from, page, pageSize, reason, store, to]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     load().catch((err: Error) => setError(err.message));
-  }, []);
+  }, [hydrated, load]);
+
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)) || 1);
+    if (page > pages - 1) setPage(pages - 1);
+  }, [page, pageSize, total]);
 
   const ppn = meta?.ppnReportDate || null;
   const described = useMemo(() => rows.map((row) => {
@@ -101,24 +178,8 @@ export function SyncView() {
     return { row, intent, why: syncReason(row.category, everSynced, Boolean(row.lastSyncError)) };
   }), [rows, ppn]);
 
-  const stores = [...new Set(rows.map((row) => row.current.storeName).filter(Boolean))].sort();
-  const channels = [...new Set(rows.map((row) => row.current.channel).filter(Boolean))].sort();
-  const actions = [...new Set(described.map((item) => item.intent.label))].sort();
-  const filtered = described.filter((item) => {
-    const text = `${item.row.noPesanan} ${item.row.current.customerName} ${item.row.current.storeName}`.toLowerCase();
-    if (q && !text.includes(q.toLowerCase())) return false;
-    if (from && item.row.day < from) return false;
-    if (to && item.row.day > to) return false;
-    if (store && item.row.current.storeName !== store) return false;
-    if (channel && item.row.current.channel !== channel) return false;
-    if (reason && item.why !== reason) return false;
-    if (action && item.intent.label !== action) return false;
-    return true;
-  });
-  const queue = useClientPage(filtered, "sync-queue", 25);
   const logPage = useClientPage(log, "sync-log", 50);
-  const pageRows = queue.shown;
-  const chosen = described.filter((item) => selected.has(item.row.noPesanan));
+  const chosen = [...selected.values()];
   const syncable = chosen.filter((item) => !item.intent.block && !item.intent.label.startsWith("Tidak dikirim"));
   const salesPush = meta?.salesPush === true;
   const databaseId = meta?.accurateDatabaseId ?? "";
@@ -131,6 +192,24 @@ export function SyncView() {
   }, [salesPush, databaseId]);
   const last = log.find((entry) => entry.action === "sync" && !entry.note.startsWith("Pelanggan") && !entry.note.startsWith("Nama pembeli"));
   const lastLabel = last ? `${stamp(last.at)} oleh ${last.actor || "sistem"}` : "belum pernah";
+  const pageNos = described.map((item) => item.row.noPesanan);
+  const allOnPage = pageNos.length > 0 && pageNos.every((no) => selected.has(no));
+  const storeOptions = store && !stores.includes(store) ? [store, ...stores] : stores;
+  const channelOptions = channel && !channels.includes(channel) ? [channel, ...channels] : channels;
+
+  function clearFilters() {
+    setPage(0);
+    setSelected(new Map());
+  }
+
+  function detailsFor(nos: string[]): QueueItem[] {
+    const byNo = new Map(selected);
+    for (const item of described) byNo.set(item.row.noPesanan, item);
+    return nos.flatMap((no) => {
+      const item = byNo.get(no);
+      return item ? [item] : [];
+    });
+  }
 
   async function ignore(nos: string[]) {
     setBusy(true);
@@ -140,7 +219,7 @@ export function SyncView() {
         await api("/api/sync/decision", { method: "POST", body: JSON.stringify({ noPesanan, decision: "ignored" }) });
       }
       setMessage(reportedOk(`${nos.length} pesanan diabaikan. Tgl Synced diisi dan pesanan keluar dari antrean.`));
-      setSelected(new Set());
+      setSelected(new Map());
       setConfirm(null);
       await load();
     } catch (err) {
@@ -157,22 +236,35 @@ export function SyncView() {
       await api("/api/sync/execute", { method: "POST", body: JSON.stringify({ nos }) });
       setMessage(reportedOk("Sync selesai."));
       setConfirm(null);
-      setSelected(new Set());
+      setSelected(new Map());
       await load();
     } catch (err) {
       setError(reported(err, "Sync gagal."));
       setConfirm(null);
-      await load().catch(() => undefined);
+      await load({ keepError: true }).catch(() => undefined);
     } finally {
       setBusy(false);
     }
   }
 
   function toggle(no: string, on: boolean) {
+    const item = described.find((entry) => entry.row.noPesanan === no);
     setSelected((current) => {
-      const next = new Set(current);
-      if (on) next.add(no);
+      const next = new Map(current);
+      if (on && item) next.set(no, item);
       else next.delete(no);
+      return next;
+    });
+  }
+
+  function togglePage(on: boolean) {
+    setSelected((current) => {
+      const next = new Map(current);
+      if (on) {
+        for (const item of described) next.set(item.row.noPesanan, item);
+      } else {
+        for (const no of pageNos) next.delete(no);
+      }
       return next;
     });
   }
@@ -194,20 +286,20 @@ export function SyncView() {
       {meta && salesPush && !databaseId ? <div className="warnbox" style={{ marginBottom: 12 }}>Pengiriman penjualan aktif, tetapi ID database Accurate kosong. Isi database di Koneksi Accurate sebelum sync.</div> : null}
       {meta && !salesPush ? <div className="warnbox" style={{ marginBottom: 12 }}>Pengiriman jual, cancel, dan retur ke Accurate tetap ditahan sampai <b>ACCURATE_SALES_PUSH=enabled</b>. Tombol Sync tidak mengirim data selama guard itu mati.</div> : null}
       <div className="filterbar">
-        <div className="f grow"><label>Cari</label><input value={q} placeholder="No pesanan, pelanggan…" onChange={(event) => { setQ(event.target.value); queue.setPage(0); }} /></div>
-        <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); queue.setPage(0); }} /></div>
-        <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); queue.setPage(0); }} /></div>
-        <div className="f"><label>Toko</label><select value={store} onChange={(event) => { setStore(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{stores.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Channel</label><select value={channel} onChange={(event) => { setChannel(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{channels.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Alasan</label><select value={reason} onChange={(event) => { setReason(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{REASONS.map((item) => <option key={item}>{item}</option>)}</select></div>
-        <div className="f"><label>Tindakan di Accurate</label><select value={action} onChange={(event) => { setAction(event.target.value); queue.setPage(0); }}><option value="">Semua</option>{actions.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f grow"><label>Cari</label><input value={q} placeholder="No pesanan, pelanggan…" onChange={(event) => { setQ(event.target.value); clearFilters(); }} /></div>
+        <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); clearFilters(); }} /></div>
+        <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); clearFilters(); }} /></div>
+        <div className="f"><label>Toko</label><select value={store} onChange={(event) => { setStore(event.target.value); clearFilters(); }}><option value="">Semua</option>{storeOptions.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Channel</label><select value={channel} onChange={(event) => { setChannel(event.target.value); clearFilters(); }}><option value="">Semua</option>{channelOptions.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Alasan</label><select value={reason} onChange={(event) => { setReason(event.target.value); clearFilters(); }}><option value="">Semua</option>{REASONS.map((item) => <option key={item}>{item}</option>)}</select></div>
+        <div className="f"><label>Tindakan di Accurate</label><select value={action} onChange={(event) => { setAction(event.target.value); clearFilters(); }}><option value="">Semua</option>{ACTIONS.map((item) => <option key={item}>{item}</option>)}</select></div>
       </div>
       <TableShell loading={loading}>
         <div className="tscroll">
           <table className="cards small">
-            <thead><tr><th></th><th>No Pesanan</th><th>Tgl Pesanan</th><th>Toko</th><th>Channel</th><th>Status</th><th className="n">Revenue Bersih</th><th>Alasan</th><th>Tutup buku</th><th>Tindakan di Accurate</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
+            <thead><tr><th><input type="checkbox" aria-label="Pilih semua di halaman ini" checked={allOnPage} disabled={!pageNos.length} onChange={(event) => togglePage(event.target.checked)} /></th><th>No Pesanan</th><th>Tgl Pesanan</th><th>Toko</th><th>Channel</th><th>Status</th><th className="n">Revenue Bersih</th><th>Alasan</th><th>Tutup buku</th><th>Tindakan di Accurate</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
             <tbody>
-              {pageRows.map(({ row, intent, why }) => {
+              {described.map(({ row, intent, why }) => {
                 const closed = row.day && ppn ? row.day <= ppn : false;
                 return (
                   <tr key={row.noPesanan} className={selected.has(row.noPesanan) ? "sel" : ""}>
@@ -233,11 +325,11 @@ export function SyncView() {
                   </tr>
                 );
               })}
-              {!pageRows.length ? <tr><td colSpan={13} className="empty">Semua pesanan sudah tersinkron ke Accurate.</td></tr> : null}
+              {!described.length ? <tr><td colSpan={13} className="empty">{q || from || to || store || channel || reason || action ? "Tidak ada pesanan untuk filter ini." : "Semua pesanan sudah tersinkron ke Accurate."}</td></tr> : null}
             </tbody>
           </table>
         </div>
-        <Pager page={queue.page} pageSize={queue.pageSize} total={queue.total} shown={pageRows.length} onPage={queue.setPage} onPageSize={queue.setPageSize} />
+        <Pager page={page} pageSize={pageSize} total={total} shown={described.length} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(0); }} />
       </TableShell>
       <div className="tablecard mt">
         <div className="th3"><b>Log sinkron</b> <span className="small mut">setiap Sync dan Abaikan dicatat siapa dan kapan</span></div>
@@ -264,7 +356,7 @@ export function SyncView() {
             {meta && salesPush && !databaseId ? <div className="warnbox mt">ID database Accurate kosong. Sync ditahan sampai database diisi di Koneksi Accurate.</div> : null}
             {meta && !salesPush ? <div className="small mut">Tidak ada data yang dikirim selama ACCURATE_SALES_PUSH belum enabled. Cancel yang sudah tutup buku tidak masuk tombol ini.</div> : null}
             {meta && !salesPush ? <div className="warnbox mt">Guard penjualan masih aktif. Accurate production tidak menerima penjualan, cancel, atau retur dari tombol ini.</div> : null}
-            <InvoicePreview rows={described.filter((item) => confirm.includes(item.row.noPesanan)).map((item) => ({
+            <InvoicePreview rows={detailsFor(confirm).map((item) => ({
               noPesanan: item.row.noPesanan,
               total: invoiceTotals(item.row.current).net,
             }))} />

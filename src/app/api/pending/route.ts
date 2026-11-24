@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
-import { isBundlePending, isMappingPending, needsAccurateSync } from "@/lib/domain/phase3";
+import { isBundlePending, isMappingPending } from "@/lib/domain/phase3";
 import { buildGeoPairs, countPendingGeo } from "@/lib/region/pairs";
 import { fail, requireSession } from "@/lib/http";
 import { listProducts } from "@/lib/products/service";
+
+export const maxDuration = 60;
+
+const QUEUE_COUNT_MS = 60_000;
+let queueCountCache: { at: number; orders: number } | null = null;
 
 export async function GET() {
   try {
@@ -25,12 +30,13 @@ export async function GET() {
     }
     let orders = 0;
     try {
-      const queue = await store.syncReview([]);
-      orders = queue.filter((row) => needsAccurateSync({
-        dataStatus: row.current.dataStatus,
-        contentUpdatedAt: row.current.contentUpdatedAt,
-        syncedAt: row.syncedAt,
-      })).length;
+      const now = Date.now();
+      if (queueCountCache && now - queueCountCache.at < QUEUE_COUNT_MS) {
+        orders = queueCountCache.orders;
+      } else {
+        orders = await store.countSyncQueue();
+        queueCountCache = { at: now, orders };
+      }
     } catch {
       orders = 0;
     }
