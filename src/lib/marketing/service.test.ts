@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -53,6 +53,11 @@ describe("marketing save", () => {
     expect(active.map((row) => row.spend)).toEqual([2500]);
     expect(deleted).toHaveLength(1);
     expect(deleted[0]?.deletedBy).toBe("Matahari Labs");
+    const saved = JSON.parse(readFileSync(process.env.MARKETING_DATA_FILE ?? "", "utf8")) as { audit: { action: string }[]; rows: { deletedAt: string | null; spend: number }[] };
+    expect(saved.rows.filter((row) => !row.deletedAt).map((row) => row.spend)).toEqual([2500]);
+    expect(saved.audit.map((row) => row.action).sort()).toEqual(["create", "create", "overwrite"]);
+    await expect(addManual({ ...input, periodStart: "", periodEnd: "", overwrite: false })).rejects.toThrow(/YYYY-MM-DD/);
+    await expect(addManual({ ...input, periodStart: "2026-02-31", periodEnd: "2026-02-31", overwrite: true })).rejects.toThrow(/tidak valid/);
     await expect(addManual({ ...input, periodEnd: "2026-12-02", overwrite: true })).rejects.toThrow(/bulan yang sama/);
     const removed = await softDeleteMarketing(active.map((row) => row.id), "Matahari Labs");
     expect(removed).toBe(1);

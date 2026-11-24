@@ -243,8 +243,9 @@ button.card.pick { border-color: var(--pri); box-shadow: 0 0 0 2px var(--pri2); 
 .plat.lazada { background: #f3e8ff; color: #7e22ce; }
 .plat.blibli { background: #e8f7ee; color: #15803d; }
 .plat.lain { background: #eef0f4; color: #5b6375; }
-.drop { display: block; border: 1.5px dashed #c7c9f5; background: #f7f7ff; border-radius: 12px; padding: 18px; text-align: center; cursor: pointer; }
-.drop:hover { border-color: var(--pri); }
+.drop { display: block; position: relative; border: 1.5px dashed #c7c9f5; background: #f7f7ff; border-radius: 12px; padding: 18px; text-align: center; cursor: pointer; }
+.drop:hover, .drop:focus-within { border-color: var(--pri); }
+.file-pick { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .badbox { background: var(--badb); color: #9f1239; border-radius: 10px; padding: 10px 12px; font-size: 12.5px; }
 .colpop { position: absolute; z-index: 30; right: 0; top: calc(100% + 6px); width: 240px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 32px rgba(20, 26, 46, .16); padding: 8px; }
 .colpop label { display: flex; gap: 8px; align-items: center; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
