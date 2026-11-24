@@ -1,5 +1,5 @@
 import type { DashboardQuery, DashboardReport, GroupRow } from "@/lib/db/types";
-import { bucketOf } from "@/lib/domain/aggregate";
+import { bucketLabel, bucketOf } from "@/lib/domain/aggregate";
 import { inclusiveDays } from "@/lib/marketing/dates";
 
 export type SpendSlice = {
@@ -65,10 +65,28 @@ export function applyMarketingAllocation(report: DashboardReport, spends: SpendS
     if (!marketing) continue;
     stores.push({ key: name, gross: 0, net: 0, hpp: 0, profit: 0, qty: 0, orders: 0, marketing });
   }
+  const granularity = query.granularity ?? "day";
+  const trend = report.trend.map((row) => ({ ...row, marketing: Math.round((byBucket.get(row.bucket) ?? 0) * 100) / 100 }));
+  const seen = new Set(trend.map((row) => row.bucket));
+  for (const [bucket, amount] of byBucket) {
+    const marketing = Math.round(amount * 100) / 100;
+    if (!bucket || seen.has(bucket) || !marketing) continue;
+    trend.push({
+      bucket,
+      label: bucketLabel(bucket, granularity),
+      gross: 0,
+      net: 0,
+      orders: 0,
+      hpp: 0,
+      profit: 0,
+      marketing,
+    });
+  }
+  trend.sort((a, b) => a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0);
   return {
     ...report,
     kpis: { ...report.kpis, marketing: Math.round(total * 100) / 100 },
     stores,
-    trend: report.trend.map((row) => ({ ...row, marketing: Math.round((byBucket.get(row.bucket) ?? 0) * 100) / 100 })),
+    trend,
   };
 }
