@@ -40,7 +40,7 @@ export function BarChart({
   const pb = 34;
   const iw = W - pl - pr;
   const ih = H - pt - pb;
-  const extent = chartExtent(series.flatMap((item) => item.values));
+  const extent = chartExtent([...series.flatMap((item) => item.values), ...(line?.values ?? [])]);
   const range = extent.max - extent.min || 1;
   const yOf = (value: number) => pt + ih - ((value - extent.min) / range) * ih;
   const n = Math.max(labels.length, 1);
@@ -65,7 +65,8 @@ export function BarChart({
           return (
             <g key={label + i}>
               {series.map((item, j) => {
-                const value = item.values[i] ?? 0;
+                const value = item.values[i];
+                if (!Number.isFinite(value)) return null;
                 const box = barBox(value, extent.min, extent.max, pt, ih);
                 return <rect key={item.name} x={x0 + j * bw + 1} y={box.y} width={Math.max(bw - 2, 1)} height={box.height} rx="3" fill={item.color}><title>{`${label} · ${item.name}: ${rp(value)}`}</title></rect>;
               })}
@@ -79,7 +80,7 @@ export function BarChart({
             stroke={line.color}
             strokeWidth="2"
             strokeDasharray="4 3"
-            points={line.values.map((value, i) => `${pl + gw * i + gw / 2},${yOf(value)}`).join(" ")}
+            points={line.values.flatMap((value, i) => Number.isFinite(value) ? [`${pl + gw * i + gw / 2},${yOf(value)}`] : []).join(" ")}
           />
         ) : null}
       </svg>

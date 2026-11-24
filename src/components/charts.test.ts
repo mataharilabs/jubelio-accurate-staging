@@ -20,4 +20,12 @@ describe("bar chart scale", () => {
     expect(extent.min).toBe(0);
     expect(extent.max).toBeCloseTo(108, 5);
   });
+
+  it("includes a line series in the same extent as the bars", () => {
+    const barsOnly = chartExtent([100]);
+    const withLine = chartExtent([100, 200]);
+    expect(withLine.max).toBeGreaterThan(barsOnly.max);
+    expect(withLine.max).toBeGreaterThan(200);
+    expect(chartExtent([100, -20]).min).toBeLessThan(0);
+  });
 });

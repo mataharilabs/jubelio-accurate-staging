@@ -9,7 +9,7 @@ import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
 import { dayShort } from "@/lib/domain/aggregate";
 import { storeProfit } from "@/lib/marketing/allocate";
-import { currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
+import { alignTrend, currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
 import { numId, rp, rpCompact } from "@/lib/format";
 
 type Mode = "toko" | "produk";
@@ -23,7 +23,8 @@ const METRIC_LABEL: Record<Metric, string> = {
 };
 
 function trendValue(row: { gross?: number; net?: number; profit?: number; marketing?: number; hpp?: number } | undefined, metric: Metric, storeMode: boolean): number {
-  if (storeMode && metric === "profit") return storeProfit(row?.net ?? 0, row?.hpp ?? 0, 0, row?.marketing ?? 0);
+  if (!row) return Number.NaN;
+  if (storeMode && metric === "profit") return storeProfit(row.net ?? 0, row.hpp ?? 0, 0, row.marketing ?? 0);
   return metricOf(row, metric);
 }
 
@@ -236,7 +237,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <BarChart
               labels={(report?.trend ?? []).map((row) => dayShort(row.bucket))}
               series={[
-                ...(compare && previous ? [{ name: "Pembanding", values: align(previous.trend, report?.trend ?? []).map((row) => trendValue(row, metric, mode === "toko")), color: "#c9cde0" }] : []),
+                ...(compare && previous ? [{ name: "Pembanding", values: alignTrend(report?.trend ?? [], previous.trend, from, previousEqualWindow(from, to).from).map((row) => trendValue(row, metric, mode === "toko")), color: "#c9cde0" }] : []),
                 { name: METRIC_LABEL[metric], values: (report?.trend ?? []).map((row) => trendValue(row, metric, mode === "toko")), color: "#4f46e5" },
               ]}
             />
@@ -281,10 +282,6 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
       ) : <div className="card" style={{ position: "relative" }}>{loading ? <div className="table-loading" role="status"><Spinner /> Memuat…</div> : "Memuat…"}</div>}
     </div>
   );
-}
-
-function align(source: DashboardReport["trend"], target: DashboardReport["trend"]) {
-  return target.map((_, index) => source[index]);
 }
 
 function Kpi({ label, value, hint, current, prior, compare, invert, money = true, tone }: { label: string; value: string; hint: string; current: number; prior?: number; compare: boolean; invert?: boolean; money?: boolean; tone?: "ok" | "bad" }) {

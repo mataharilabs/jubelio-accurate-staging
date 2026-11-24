@@ -42,6 +42,24 @@ export function previousMonthRange(today = wibDate()): { from: string; to: strin
   return { from: iso(start), to: iso(end) };
 }
 
+function shiftIso(day: string, days: number): string {
+  const stamp = new Date(`${day}T00:00:00Z`);
+  stamp.setUTCDate(stamp.getUTCDate() + days);
+  return stamp.toISOString().slice(0, 10);
+}
+
+/** Previous-period bucket for a current bucket, using the equal window immediately before. */
+export function previousTrendBucket(bucket: string, currentFrom: string, previousFrom: string): string {
+  const shift = Math.round((Date.parse(`${currentFrom}T00:00:00Z`) - Date.parse(`${previousFrom}T00:00:00Z`)) / 86400000);
+  return shiftIso(bucket, -shift);
+}
+
+/** Pair each current trend bucket with the previous window's same relative day. */
+export function alignTrend<T extends { bucket: string }>(current: T[], previous: T[], currentFrom: string, previousFrom: string): (T | undefined)[] {
+  const byBucket = new Map(previous.map((row) => [row.bucket, row]));
+  return current.map((row) => byBucket.get(previousTrendBucket(row.bucket, currentFrom, previousFrom)));
+}
+
 /** Same-length window immediately before the chosen period. */
 export function previousEqualWindow(from: string, to: string): { from: string; to: string } {
   const start = Date.parse(`${from}T00:00:00Z`);
