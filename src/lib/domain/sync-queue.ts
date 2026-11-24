@@ -219,6 +219,31 @@ function matchesReview(item: DescribedReview, query: SyncReviewQuery, storeAndCh
   return true;
 }
 
+/** Asked of sync_queue. The deployed function clamps this to at most 200. */
+export const SYNC_EXPORT_PAGE = 1000;
+export const SYNC_EXPORT_PARALLEL = 8;
+
+export function syncExportPageSize(returned: number, fallback = 200): number {
+  return returned > 0 ? returned : fallback;
+}
+
+/** Page numbers after the first page. Empty when the first page already holds every row. */
+export function syncExportRestPages(total: number, pageSize: number): number[] {
+  if (pageSize <= 0 || total <= pageSize) return [];
+  const count = Math.ceil(total / pageSize);
+  return Array.from({ length: count - 1 }, (_, index) => index + 1);
+}
+
+export function syncQueueEmptyText(input: { failed: boolean; filtered: boolean }): string {
+  if (input.failed) return "Gagal memuat data pesanan.";
+  if (input.filtered) return "Tidak ada pesanan untuk filter ini.";
+  return "Semua pesanan sudah tersinkron ke Accurate.";
+}
+
+export function syncLogEmptyText(failed: boolean): string {
+  return failed ? "Gagal memuat log sinkron." : "Belum ada log.";
+}
+
 /** In-memory page used by the local store. Same filters as sync_queue. Default page size is 25. */
 export function pageSyncReview(rows: SyncReviewRow[], query: SyncReviewQuery, ppnReportDate?: string | null): SyncReviewPage {
   const pageSize = clampPageSize(query.pageSize, 25);
