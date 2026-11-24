@@ -211,20 +211,24 @@ export function MarketingView() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const columns = useColumns();
   const loadGen = useRef(0);
+  const monthRef = useRef(month);
+  const statusRef = useRef(status);
   const previewGen = useRef(0);
   const shownPreviewKey = useRef("");
 
-  async function load(nextMonth = month, nextStatus = status) {
+  async function load(nextMonth = monthRef.current, nextStatus = statusRef.current) {
+    monthRef.current = nextMonth;
+    statusRef.current = nextStatus;
     const gen = ++loadGen.current;
     setLoading(true);
     try {
       const result = await api<{ rows: MarketingRecord[]; stores: string[] }>(`/api/marketing?month=${nextMonth}&status=${nextStatus}`);
-      if (gen !== loadGen.current) return;
+      if (gen !== loadGen.current || monthRef.current !== nextMonth || statusRef.current !== nextStatus) return;
       setRows(result.rows);
       setStores(result.stores);
       setError(null);
     } catch (err) {
-      if (gen !== loadGen.current) return;
+      if (gen !== loadGen.current || monthRef.current !== nextMonth || statusRef.current !== nextStatus) return;
       setError(reported(err, "Gagal memuat marketing spending."));
     } finally {
       if (gen === loadGen.current) setLoading(false);
@@ -233,8 +237,6 @@ export function MarketingView() {
 
   useEffect(() => {
     load().catch(() => undefined);
-    // The first paint loads the current month.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => filterMarketingRows(rows, { store: storeFilter, platform: platformFilter, source: sourceFilter, q }), [rows, storeFilter, platformFilter, sourceFilter, q]);

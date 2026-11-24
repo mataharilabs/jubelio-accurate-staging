@@ -51,8 +51,8 @@ export function exportCsv(rows: Record<string, string | number | null>[]): strin
   const escape = (value: string | number | null) => {
     if (typeof value === "number") return String(value);
     let text = value == null ? "" : String(value);
-    if (/^[=+\-@]/.test(text)) text = `'${text}`;
-    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    if (/^[\r\n]*[=+\-@]/.test(text)) text = `'${text}`;
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return [headers.join(","), ...rows.map((row) => headers.map((header) => escape(row[header])).join(","))].join("\n");
 }

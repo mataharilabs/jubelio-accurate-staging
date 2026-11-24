@@ -52,4 +52,15 @@ describe("marketing allocation", () => {
     expect(storeProfit(next.trend[0]?.net ?? 0, next.trend[0]?.hpp ?? 0, 0, next.trend[0]?.marketing ?? 0)).toBe(500);
     expect(storeProfit(next.kpis.net, next.kpis.hpp, next.kpis.fee, next.kpis.marketing)).toBe(500);
   });
+
+  it("adds a trend day that has marketing spend and no sales", () => {
+    const base = report();
+    base.trend = [{ bucket: "2026-11-01", label: "1 Nov", gross: 100, net: 90, orders: 1, hpp: 20, profit: 70 }];
+    const next = applyMarketingAllocation(base, [
+      { storeName: "Jansen Official Store", periodStart: "2026-11-09", periodEnd: "2026-11-09", spend: 100 },
+    ], { from: "2026-11-01", to: "2026-11-19", stores: [], granularity: "day" });
+    const quiet = next.trend.find((row) => row.bucket === "2026-11-09");
+    expect(quiet).toMatchObject({ gross: 0, net: 0, orders: 0, profit: 0, marketing: 100 });
+    expect(next.trend.map((row) => row.bucket)).toEqual(["2026-11-01", "2026-11-09"]);
+  });
 });

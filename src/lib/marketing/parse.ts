@@ -319,10 +319,14 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
     const values = TEMPLATE_COLUMNS.map((name) => pick(header.map, row, name));
     if (values.every((value) => cellText(value) === "")) continue;
     result.readCount += 1;
-    const start = parseDate(pick(header.map, row, "tanggal_mulai"));
-    const end = parseDate(pick(header.map, row, "tanggal_selesai"));
     const rawPlatform = cellText(pick(header.map, row, "platform"));
     const platform = rawPlatform ? normalizePlatform(rawPlatform) : (fallbackPlatform && isPlatform(fallbackPlatform) ? fallbackPlatform : null);
+    if (rawPlatform && !platform) {
+      unknown.push({ row: index + 1, reason: `platform tidak dikenal: ${rawPlatform}` });
+      continue;
+    }
+    const start = parseDate(pick(header.map, row, "tanggal_mulai"));
+    const end = parseDate(pick(header.map, row, "tanggal_selesai"));
     const storeRaw = cellText(pick(header.map, row, "toko"));
     const spend = money(pick(header.map, row, "spend"));
     if (!start || !end || end < start) {
@@ -331,10 +335,6 @@ export function parseTemplate(rows: unknown[][], filename: string, fallbackPlatf
     }
     if (!sameCalendarMonth(start, end)) {
       crossing.push({ row: index + 1, reason: "lintas bulan" });
-      continue;
-    }
-    if (rawPlatform && !platform) {
-      unknown.push({ row: index + 1, reason: `platform tidak dikenal: ${rawPlatform}` });
       continue;
     }
     if (!platform) {

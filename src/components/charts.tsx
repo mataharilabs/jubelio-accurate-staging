@@ -4,6 +4,25 @@ import { rp, rpCompact } from "@/lib/format";
 
 const PAL = ["#4f46e5", "#0ea5e9", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#84cc16", "#f97316"];
 
+/** Scale that keeps zero on the axis when a series goes below zero. */
+export function chartExtent(values: number[]): { min: number; max: number } {
+  const finite = values.filter((value) => Number.isFinite(value));
+  const rawMax = Math.max(0, ...finite);
+  const rawMin = Math.min(0, ...finite);
+  const span = Math.max(rawMax - rawMin, 1);
+  const pad = span * 0.08;
+  return { min: rawMin < 0 ? rawMin - pad : 0, max: rawMax + pad };
+}
+
+/** Bar rectangle in SVG space. Negative values hang below the zero baseline. */
+export function barBox(value: number, min: number, max: number, top: number, height: number): { y: number; height: number } {
+  const range = max - min || 1;
+  const yOf = (point: number) => top + height - ((point - min) / range) * height;
+  const zero = yOf(0);
+  const yValue = yOf(value);
+  return { y: Math.min(zero, yValue), height: Math.abs(zero - yValue) };
+}
+
 export function BarChart({
   labels,
   series,
@@ -21,30 +40,34 @@ export function BarChart({
   const pb = 34;
   const iw = W - pl - pr;
   const ih = H - pt - pb;
-  const max = Math.max(1, ...series.flatMap((item) => item.values)) * 1.08;
+  const extent = chartExtent(series.flatMap((item) => item.values));
+  const range = extent.max - extent.min || 1;
+  const yOf = (value: number) => pt + ih - ((value - extent.min) / range) * ih;
   const n = Math.max(labels.length, 1);
   const gw = iw / n;
   const bw = Math.min(46, (gw * 0.72) / Math.max(series.length, 1));
-  const lineMax = line ? Math.max(1, ...line.values) * 1.15 : 1;
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img">
         {[0, 1, 2, 3, 4].map((i) => {
-          const y = pt + ih - (ih * i) / 4;
+          const value = extent.min + (range * i) / 4;
+          const y = yOf(value);
           return (
             <g key={i}>
-              <line x1={pl} x2={W - pr} y1={y} y2={y} stroke="#eef0f5" />
-              <text x={pl - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#8a91a3">{rpCompact(max * i / 4)}</text>
+              <line x1={pl} x2={W - pr} y1={y} y2={y} stroke={value === 0 ? "#d5d9e6" : "#eef0f5"} />
+              <text x={pl - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#8a91a3">{rpCompact(value)}</text>
             </g>
           );
         })}
+        {extent.min < 0 ? <line x1={pl} x2={W - pr} y1={yOf(0)} y2={yOf(0)} stroke="#c5cad8" /> : null}
         {labels.map((label, i) => {
           const x0 = pl + gw * i + (gw - bw * series.length) / 2;
           return (
             <g key={label + i}>
               {series.map((item, j) => {
-                const h = (ih * (item.values[i] || 0)) / max;
-                return <rect key={item.name} x={x0 + j * bw + 1} y={pt + ih - h} width={Math.max(bw - 2, 1)} height={Math.max(0, h)} rx="3" fill={item.color}><title>{`${label} · ${item.name}: ${rp(item.values[i] || 0)}`}</title></rect>;
+                const value = item.values[i] ?? 0;
+                const box = barBox(value, extent.min, extent.max, pt, ih);
+                return <rect key={item.name} x={x0 + j * bw + 1} y={box.y} width={Math.max(bw - 2, 1)} height={box.height} rx="3" fill={item.color}><title>{`${label} · ${item.name}: ${rp(value)}`}</title></rect>;
               })}
               <text x={pl + gw * i + gw / 2} y={H - 12} textAnchor="middle" fontSize="11" fill="#5b6375">{label}</text>
             </g>
@@ -56,7 +79,7 @@ export function BarChart({
             stroke={line.color}
             strokeWidth="2"
             strokeDasharray="4 3"
-            points={line.values.map((value, i) => `${pl + gw * i + gw / 2},${pt + ih - (ih * value) / lineMax}`).join(" ")}
+            points={line.values.map((value, i) => `${pl + gw * i + gw / 2},${yOf(value)}`).join(" ")}
           />
         ) : null}
       </svg>
