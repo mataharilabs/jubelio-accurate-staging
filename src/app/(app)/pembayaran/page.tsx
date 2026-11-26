@@ -1,5 +1,5 @@
-import { SoonPage } from "@/components/soon-page";
+import { PembayaranView } from "@/components/pembayaran-view";
 
 export default function Page() {
-  return <SoonPage title="Pembayaran" />;
+  return <PembayaranView />;
 }

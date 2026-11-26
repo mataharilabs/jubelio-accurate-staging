@@ -22,8 +22,8 @@ const METRIC_LABEL: Record<Metric, string> = {
   profit: "Profit",
 };
 
-function trendValue(row: { gross?: number; net?: number; profit?: number; marketing?: number; hpp?: number } | undefined, metric: Metric, storeMode: boolean): number {
-  if (storeMode && metric === "profit") return storeProfit(row?.net ?? 0, row?.hpp ?? 0, 0, row?.marketing ?? 0);
+function trendValue(row: { gross?: number; net?: number; profit?: number; marketing?: number; hpp?: number; fee?: number } | undefined, metric: Metric, storeMode: boolean): number {
+  if (storeMode && metric === "profit") return storeProfit(row?.net ?? 0, row?.hpp ?? 0, row?.fee ?? 0, row?.marketing ?? 0);
   return metricOf(row, metric);
 }
 
@@ -220,7 +220,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <Kpi label="Diskon" value={rpCompact(A.disc)} hint={A.gross ? `${((A.disc / A.gross) * 100).toFixed(1).replace(".", ",")}% dari kotor` : ""} current={A.disc} prior={C?.disc} compare={compare} invert />
             <Kpi label="Revenue Bersih" value={rpCompact(A.net)} hint="kotor − diskon" current={A.net} prior={C?.net} compare={compare} />
             <Kpi label="Total HPP" value={rpCompact(A.hpp)} hint={A.missingSkus ? `${A.missingSkus} SKU belum ada HPP (dihitung 0)` : "DPP × 1,11 (inkl. PPN)"} current={A.hpp} prior={C?.hpp} compare={compare} invert />
-            <Kpi label="Total Biaya Platform" value={rpCompact(A.fee)} hint="sementara 0" current={A.fee} prior={C?.fee} compare={compare} invert />
+            <Kpi label="Total Biaya Platform" value={rpCompact(A.fee)} hint="dari impor pembayaran · pajak tidak dipotong" current={A.fee} prior={C?.fee} compare={compare} invert />
             <Kpi label="Total Marketing Spending" value={rpCompact(mode === "toko" ? A.marketing : 0)} hint={mode === "toko" ? "dari Master Marketing Spending · apa adanya dari report" : "tidak dipotong dari profit produk"} current={mode === "toko" ? A.marketing : 0} prior={mode === "toko" ? C?.marketing : 0} compare={compare && mode === "toko"} invert />
             <Kpi label="Total Profit" value={rpCompact(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit)} hint={A.net ? `margin ${(((mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) / A.net) * 100).toFixed(1).replace(".", ",")}%` : ""} current={mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit} prior={C ? (mode === "toko" ? C.net - C.hpp - C.fee - C.marketing : C.profit) : undefined} compare={compare} tone={(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) < 0 ? "bad" : "ok"} />
             <Kpi label="Jumlah Pesanan" value={numId(A.orders)} hint="tidak termasuk Dihapus" current={A.orders} prior={C?.orders} compare={compare} money={false} />
@@ -243,7 +243,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           </div>
           {mode === "toko" ? (
             <>
-              <PerTable title="Penjualan per Toko" rows={(report?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: (row.net ?? 0) - (row.hpp ?? 0) - (row.marketing ?? 0) }))} compareRows={(previous?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: (row.net ?? 0) - (row.hpp ?? 0) - (row.marketing ?? 0) }))} metric={metric} compare={compare} showMarketing />
+              <PerTable title="Penjualan per Toko" rows={(report?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} compareRows={(previous?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} metric={metric} compare={compare} showMarketing />
               <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
               <div className="card mt"><h3>Penjualan per Channel <small>{METRIC_LABEL[metric]}</small></h3><Donut items={(report?.channels ?? []).map((row, index) => ({ label: row.key || "—", value: Math.max(0, metricOf(row, metric)), color: CHART_PAL[index % CHART_PAL.length] }))} /></div>
             </>
@@ -271,7 +271,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <b>Catatan perhitungan</b>
             <ul>
               <li><b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : ". Marketing ditampilkan 0"}.</li>
-              <li><b>Biaya Platform</b> sementara semua 0. Nanti dari Excel penarikan dana.</li>
+              <li><b>Biaya Platform</b> dari impor pembayaran. Pajak (PPh) dicatat tetapi tidak mengurangi profit. HPP yang belum ada dihitung 0.</li>
               <li><b>Marketing Spending</b> mengikuti periode dan filter toko, apa adanya dari report (tanpa PPN). Spend mingguan dihitung utuh bila periodenya masuk jendela, dan diprorata per hari bila hanya sebagian. Tidak dipecah per channel atau SKU. Profit toko menguranginya; profit produk tidak.</li>
               <li><b>HPP</b> = HPP Accurate bulan pesanan (posisi tanggal 1) = DPP × 1,11. Jika snapshot bulan hilang, dipakai bulan sebelumnya. SKU yang sama sekali belum punya HPP dihitung 0.</li>
               <li>Pesanan <b>Dihapus</b> tidak dihitung. Pesanan <b>-R</b> (Barang Hilang, harga 0) ikut dihitung. RETURNED ikut kecuali difilter keluar.</li>
@@ -309,7 +309,7 @@ function PerTable({ title, rows, compareRows, metric, compare, defaultSize = 25,
   );
 }
 
-function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSize = 25, showMarketing = false }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number }[]; metric: Metric; compare: boolean; col: string; tableKey: string; defaultSize?: number; showMarketing?: boolean }) {
+function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSize = 25, showMarketing = false }: { rows: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number; miss?: boolean }[]; compareRows?: { key: string; gross?: number; net?: number; qty: number; orders: number; profit?: number; marketing?: number; miss?: boolean }[]; metric: Metric; compare: boolean; col: string; tableKey: string; defaultSize?: number; showMarketing?: boolean }) {
   const sorted = [...rows].sort((a, b) => metricOf(b, metric) - metricOf(a, metric));
   const page = useClientPage(sorted, `dash-${tableKey}-${metric}`, defaultSize);
   const shown = page.shown;
@@ -326,7 +326,7 @@ function PerBody({ rows, compareRows, metric, compare, col, tableKey, defaultSiz
           const delta = pct(metricOf(row, metric), metricOf(before, metric));
           return (
             <tr key={row.key || "kosong"}>
-              <td>{row.key || "—"}</td>
+              <td>{row.key || "—"}{row.miss ? <div className="pill p-warn">HPP belum lengkap</div> : null}</td>
               <td className="n">{numId(row.orders)}</td>
               <td className="n">{numId(row.qty)}</td>
               <td className="n">{rp(row.gross)}</td>

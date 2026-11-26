@@ -361,6 +361,9 @@ export class SupabaseStore implements DataStore {
         gross: Number(row.gross),
         net: Number(row.net),
         orders: Number(row.orders),
+        hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
+        profit: Number(row.profit ?? 0),
         label: bucketLabel(row.bucket, query.granularity),
       })),
       channels: (raw.channels ?? []).map(numberGroup),
@@ -376,6 +379,7 @@ export class SupabaseStore implements DataStore {
         net: Number(row.net),
         gross: Number(row.gross ?? 0),
         hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
         profit: Number(row.profit ?? row.net ?? 0),
         qty: Number(row.qty),
         orders: Number(row.orders),
@@ -386,6 +390,7 @@ export class SupabaseStore implements DataStore {
         net: Number(row.net),
         gross: Number(row.gross ?? 0),
         hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
         profit: Number(row.profit ?? row.net ?? 0),
         qty: Number(row.qty),
         orders: Number(row.orders),
@@ -393,6 +398,18 @@ export class SupabaseStore implements DataStore {
       })),
       brands: (raw.brands ?? []).map(numberGroup),
       categories: (raw.categories ?? []).map(numberGroup),
+      lossStores: (raw.lossStores ?? []).map((row) => ({
+        channel: String(row.channel ?? ""),
+        storeName: String(row.storeName ?? ""),
+        orders: Number(row.orders ?? 0),
+        loss: Number(row.loss ?? 0),
+      })),
+      unpaidStores: (raw.unpaidStores ?? []).map((row) => ({
+        channel: String(row.channel ?? ""),
+        storeName: String(row.storeName ?? ""),
+        orders: Number(row.orders ?? 0),
+        net: Number(row.net ?? 0),
+      })),
     };
     return attachMarketing(report, query);
   }
@@ -426,6 +443,8 @@ export class SupabaseStore implements DataStore {
       channels: query.channels ?? [],
       stores: query.stores ?? [],
       sync: query.sync ?? "",
+      loss: Boolean(query.loss),
+      unpaid: Boolean(query.unpaid),
     } });
     if (error) {
       const text = error.message ?? "";
@@ -440,7 +459,14 @@ export class SupabaseStore implements DataStore {
       orders: Number(raw.orders ?? 0),
       page: Number(raw.page ?? 0),
       pages: Number(raw.pages ?? 1),
-      rows: (raw.rows ?? []).map((row) => ({ ...row, flags: row.flags ?? [], hpp: row.hpp == null ? null : Number(row.hpp), grossProfit: row.grossProfit == null ? null : Number(row.grossProfit) })),
+      rows: (raw.rows ?? []).map((row) => ({
+        ...row,
+        flags: row.flags ?? [],
+        hpp: row.hpp == null ? null : Number(row.hpp),
+        hppMissing: Boolean(row.hppMissing),
+        grossProfit: row.grossProfit == null ? null : Number(row.grossProfit),
+        orderProfit: row.orderProfit == null ? null : Number(row.orderProfit),
+      })),
     };
   }
 
@@ -1208,7 +1234,7 @@ export class SupabaseStore implements DataStore {
   }
 }
 
-function numberGroup<T extends { gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number }>(row: T): T {
+function numberGroup<T extends { gross: number; net: number; qty: number; orders: number; hpp?: number; fee?: number; profit?: number }>(row: T): T {
   return {
     ...row,
     gross: Number(row.gross),
@@ -1216,6 +1242,7 @@ function numberGroup<T extends { gross: number; net: number; qty: number; orders
     qty: Number(row.qty),
     orders: Number(row.orders),
     hpp: Number(row.hpp ?? 0),
+    fee: Number(row.fee ?? 0),
     profit: Number(row.profit ?? row.net ?? 0),
   };
 }

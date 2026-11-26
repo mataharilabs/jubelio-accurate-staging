@@ -69,13 +69,14 @@ export function dashboardSheet(report: DashboardReport, compare?: { label: strin
     { Metrik: "Jumlah pesanan", Nilai: kpi.orders },
     { Metrik: "Qty terjual", Nilai: kpi.qty },
     { Metrik: "AOV", Nilai: kpi.aov },
+    { Metrik: "Biaya platform", Nilai: kpi.fee },
     { Metrik: "Marketing spending", Nilai: marketing },
     { Metrik: mode === "toko" ? "Profit toko" : "Profit produk", Nilai: storeProfit(kpi.net, kpi.hpp, kpi.fee, marketing) },
   ]), "KPI");
   const stores = report.stores.map((row) => ({
     ...row,
     marketing: mode === "toko" ? row.marketing ?? 0 : 0,
-    profit: mode === "toko" ? storeProfit(row.net ?? 0, row.hpp ?? 0, 0, row.marketing ?? 0) : (row.profit ?? storeProfit(row.net ?? 0, row.hpp ?? 0, 0, 0)),
+    profit: mode === "toko" ? storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) : (row.profit ?? storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, 0)),
   }));
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(report.channels), "Channel");
   XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(stores), "Toko");

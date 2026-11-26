@@ -15,7 +15,7 @@ const LINKS: NavLink[] = [
   { href: "/produk/merek", label: "Brand", group: "Master Data" },
   { href: "/produk/kategori", label: "Kategori", group: "Master Data" },
   { href: "/produk/hpp", label: "HPP", group: "Master Data", badge: "hpp" },
-  { href: "/pembayaran", label: "Pembayaran", group: "Master Data", soon: true },
+  { href: "/pembayaran", label: "Pembayaran", group: "Master Data" },
   { href: "/marketing", label: "Marketing Spending", group: "Master Data" },
   { href: "/sync", label: "Pesanan", group: "Sinkron ke Accurate", badge: "orders" },
   { href: "/sync/pembayaran", label: "Pembayaran", group: "Sinkron ke Accurate", soon: true },

@@ -305,7 +305,7 @@ export function OrdersView() {
       <TableShell loading={loading}>
         <div className="tscroll">
           <table className="small cards">
-            <thead><tr><th></th><th>No pesanan</th><th>Tgl</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Revenue</th><th>Status</th><th>Status data</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
+            <thead><tr><th></th><th>No pesanan</th><th>Tgl</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Revenue</th><th className="n">Laba</th><th>Status</th><th>Status data</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
             <tbody>
               {data?.rows.map((row) => {
                 const need = needsAccurateSync({ dataStatus: row.dataStatus, contentUpdatedAt: row.contentUpdatedAt, syncedAt: row.syncedAt });
@@ -316,9 +316,10 @@ export function OrdersView() {
                   <td data-label="Tanggal">{row.day}</td>
                   <td data-label="Channel">{row.channel}</td>
                   <td data-label="Toko">{row.storeName}</td>
-                  <td data-label="SKU">{row.sku}<div className="mut">{row.productName}</div></td>
+                  <td data-label="SKU">{row.sku}<div className="mut">{row.productName}</div>{row.hppMissing ? <div className="pill p-warn">HPP belum lengkap</div> : null}</td>
                   <td data-label="Qty" className="n">{numId(row.qty)}</td>
                   <td data-label="Revenue" className="n">{rp((row.revenuePerUnit ?? 0) * row.qty)}</td>
+                  <td data-label="Laba" className="n">{row.grossProfit == null ? "—" : rp(row.grossProfit)}</td>
                   <td data-label="Status">{row.status || "—"}{row.returnCase ? <div className="small mut">Case {row.returnCase}</div> : null}</td>
                   <td data-label="Status data">{row.dataStatus === "deleted" ? <span className="pill p-bad">Dihapus</span> : <span className="pill p-ok">Aktif</span>}</td>
                   <td data-label="Updated">{row.contentUpdatedAt ? row.contentUpdatedAt.slice(0, 16).replace("T", " ") : "—"}</td>
