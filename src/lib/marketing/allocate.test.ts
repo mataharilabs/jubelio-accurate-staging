@@ -99,6 +99,20 @@ describe("marketing allocation", () => {
     expect(tiktok.kpis.marketing).toBeLessThan(47_542_977 + 10_346_358);
   });
 
+  it("scales platform ad revenue with the visible share of spend", () => {
+    const base = report();
+    base.allocBase = [
+      { store: "Jansen Official Store", channel: "Tiktok", net: 50, hpp: 0, fee: 0 },
+      { store: "Jansen Official Store", channel: "Tokopedia", net: 50, hpp: 0, fee: 0 },
+    ];
+    const next = applyMarketingAllocation(base, [
+      { storeName: "Jansen Official Store", platform: "TikTok Ads", periodStart: "2026-10-01", periodEnd: "2026-10-01", spend: 100, adsRevenue: 1000 },
+    ], { from: "2026-10-01", to: "2026-10-01", stores: [], channels: ["Tiktok"], granularity: "day" });
+    expect(next.kpis.marketing).toBe(50);
+    expect(next.marketingLines?.[0]?.spend).toBe(50);
+    expect(next.marketingLines?.[0]?.adsRevenue).toBe(500);
+  });
+
   it("adds a trend day that has marketing spend and no sales", () => {
     const base = report();
     base.trend = [{ bucket: "2026-11-01", label: "1 Nov", gross: 100, net: 90, orders: 1, hpp: 20, profit: 70 }];

@@ -102,11 +102,13 @@ export function OrdersView() {
   }
 
   async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort, nextExclude = excludeReturns, nextSkus = skuFilter) {
+    const requestId = ++loadSeq.current;
     setLoading(true);
     try {
-      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus)}`));
+      const result = await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus)}`);
+      if (requestId === loadSeq.current) setData(result);
     } finally {
-      setLoading(false);
+      if (requestId === loadSeq.current) setLoading(false);
     }
   }
 
@@ -125,6 +127,7 @@ export function OrdersView() {
     }).catch(() => setCanAdd(false));
   }, []);
   const started = useRef(false);
+  const loadSeq = useRef(0);
   useEffect(() => {
     if (!pageReady || started.current) return;
     started.current = true;

@@ -160,6 +160,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     if (extra.store) params.set("stores", extra.store);
     if (extra.skus) params.set("skus", extra.skus);
     if (extra.sort) params.set("sort", extra.sort);
+    if (query.statuses.length) params.set("statuses", query.statuses.join(","));
     if (!includeReturns) params.set("excludeReturns", "1");
     if (extra.loss) params.set("loss", "1");
     if (extra.unpaid) params.set("unpaid", "1");
@@ -362,7 +363,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
                 hint="profit bersih paling negatif di atas · sudah termasuk marketing · klik membuka pesanan (profit pesanan = revenue − HPP − biaya platform, tanpa marketing)"
                 rows={lossRank}
                 loading={loading}
-                href={(row) => orderHref({ loss: true, channel: row.channel, store: row.store, sort: "profit" })}
+                href={(row) => orderHref({ channel: row.channel, store: row.store, sort: "profit" })}
               />
               <WaterfallTable title="Penjualan per Toko" hint="urut dari profit bersih terendah · baris bisa dibuka per channel" rows={storeRows} compareRows={compare ? previousStores : undefined} loading={loading} withMarketing expandable marketingThroughByStore={report?.marketingThroughByStore} periodTo={to} />
               <WaterfallTable title="Penjualan per Channel" rows={channelProfitRows} compareRows={compare ? previousChannels : undefined} loading={loading} withMarketing marketingThrough={report?.marketingThrough} periodTo={to} />

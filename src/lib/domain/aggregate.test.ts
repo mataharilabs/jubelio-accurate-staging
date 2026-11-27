@@ -97,6 +97,9 @@ describe("dashboard product names", () => {
     const hidden = reportOf(rows, query);
     expect(hidden.kpis.orders).toBe(1);
     expect(hidden.kpis.net).toBe(100);
+    expect(hidden.kpis.returnsOrders).toBe(1);
+    expect(hidden.kpis.returnsNet).toBe(40);
+    expect(reportOf([{ ...version([line({ revenuePerUnit: 9, subTotal: 9 })], "SO-PAD"), status: " RETURNED " }], query).kpis.net).toBe(0);
     const shown = reportOf(rows, { ...query, includeReturns: true });
     expect(shown.kpis.orders).toBe(2);
     expect(shown.kpis.net).toBe(140);
