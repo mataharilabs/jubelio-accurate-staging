@@ -85,4 +85,20 @@ describe("dashboard product names", () => {
     );
     expect(report.products[0].name).toBe("Zebra listing");
   });
+
+  it("leaves returned orders out unless asked, and always drops cancelled orders", () => {
+    const rows = [
+      version([line({ revenuePerUnit: 100, subTotal: 100 })], "SO-OK"),
+      version([line({ id: "l2", revenuePerUnit: 40, subTotal: 40 })], "SO-R"),
+      version([line({ id: "l3", revenuePerUnit: 15, subTotal: 15 })], "SO-C"),
+    ];
+    rows[1] = { ...rows[1], status: "RETURNED" };
+    rows[2] = { ...rows[2], status: "CANCELED" };
+    const hidden = reportOf(rows, query);
+    expect(hidden.kpis.orders).toBe(1);
+    expect(hidden.kpis.net).toBe(100);
+    const shown = reportOf(rows, { ...query, includeReturns: true });
+    expect(shown.kpis.orders).toBe(2);
+    expect(shown.kpis.net).toBe(140);
+  });
 });

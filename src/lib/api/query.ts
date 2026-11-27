@@ -21,5 +21,6 @@ export function dashboardQuery(input: Partial<DashboardQuery> | null | undefined
     skus: asList(input?.skus),
     brands: asList(input?.brands),
     categories: asList(input?.categories),
+    includeReturns: Boolean(input?.includeReturns),
   };
 }

@@ -101,8 +101,15 @@ export function flattenCurrent(versions: OrderVersion[], names?: ReadonlyMap<str
   return rows;
 }
 
+function isCancelledStatus(status: string): boolean {
+  const value = status.toUpperCase();
+  return value === "CANCELED" || value === "CANCELLED" || value === "CANCEL" || value.startsWith("CANCEL");
+}
+
 export function filterFlat(rows: Flat[], query: DashboardQuery): Flat[] {
   return rows.filter((row) => {
+    if (isCancelledStatus(row.status)) return false;
+    if (!query.includeReturns && row.status.toUpperCase() === "RETURNED") return false;
     if (query.from && row.day < query.from) return false;
     if (query.to && row.day > query.to) return false;
     if (!selected(query.channels, row.channel)) return false;

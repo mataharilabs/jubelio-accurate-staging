@@ -194,7 +194,8 @@ export class LocalStore implements DataStore {
         const want = query.dataStatus ?? "active";
         if (!(want === "all" || status === want)) return false;
         const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
-        if (query.loss && (net >= 0 || isCancelledStatus(version.status))) return false;
+        const hpp = version.lines.reduce((sum, line) => sum + (line.unitCogs == null ? 0 : Math.round(line.unitCogs * 1.11) * line.qty), 0);
+        if (query.loss && (net - hpp >= 0 || isCancelledStatus(version.status))) return false;
         if (query.unpaid && (isCancelledStatus(version.status) || net === 0)) return false;
         return true;
       })
@@ -216,6 +217,14 @@ export class LocalStore implements DataStore {
         contentUpdatedAt: version.contentUpdatedAt ?? version.createdAt,
         syncedAt: this.db.syncStates.find((item) => item.noPesanan === version.noPesanan)?.syncedAt ?? null,
       }, query));
+    if (query.sort === "profit") {
+      const profitOf = new Map(this.db.versions.map((version) => {
+        const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
+        const hpp = version.lines.reduce((sum, line) => sum + (line.unitCogs == null ? 0 : Math.round(line.unitCogs * 1.11) * line.qty), 0);
+        return [version.noPesanan, net - hpp] as const;
+      }));
+      rows.sort((a, b) => (profitOf.get(a.version.noPesanan) ?? 0) - (profitOf.get(b.version.noPesanan) ?? 0) || b.version.day.localeCompare(a.version.day) || a.version.noPesanan.localeCompare(b.version.noPesanan));
+    }
     const pageSize = query.pageSize || 25;
     const pages = Math.max(1, Math.ceil(rows.length / pageSize));
     const page = Math.min(query.page, pages - 1);
