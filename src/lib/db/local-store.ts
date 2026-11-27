@@ -9,6 +9,7 @@ import { applyLineEdit, diffVersions, orderRevenue } from "@/lib/domain/orders";
 import { buildReturnVersions, canSoftDeleteOrder, needsAccurateSync, syncFailureForVersion } from "@/lib/domain/phase3";
 import { pageSyncReview } from "@/lib/domain/sync-queue";
 import { reportOf } from "@/lib/domain/aggregate";
+import { isMarketplaceChannel } from "@/lib/fees/channel";
 import { isCancelledStatus } from "@/lib/fees/money";
 import { attachMarketing } from "@/lib/marketing/dashboard";
 import { reviewRow } from "@/lib/domain/review-rows";
@@ -195,7 +196,7 @@ export class LocalStore implements DataStore {
         if (!(want === "all" || status === want)) return false;
         const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
         if (query.loss && net >= 0) return false;
-        if (query.unpaid && isCancelledStatus(version.status)) return false;
+        if (query.unpaid && (isCancelledStatus(version.status) || !isMarketplaceChannel(version.channel))) return false;
         return true;
       })
       .flatMap((version) => version.lines.map((line) => ({ version, line })))

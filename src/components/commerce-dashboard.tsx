@@ -1,12 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { BarChart, CHART_PAL, Donut } from "@/components/charts";
 import { downloadExport } from "@/components/download";
-import { ActionButton, reported, reportedOk, Spinner } from "@/components/ui/feedback";
+import { ActionButton, reported, reportedOk, Spinner, TableShell } from "@/components/ui/feedback";
 import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
+import { isMarketplaceChannel } from "@/lib/fees/channel";
 import { dayShort } from "@/lib/domain/aggregate";
 import { storeProfit } from "@/lib/marketing/allocate";
 import { currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
@@ -145,6 +147,18 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
   const C = previous?.kpis;
   const profitLabel = mode === "toko" ? "Profit Toko" : "Profit Produk";
 
+  function orderHref(extra: { loss?: boolean; unpaid?: boolean; channel: string; store: string }) {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (extra.channel) params.set("channels", extra.channel);
+    if (extra.store) params.set("stores", extra.store);
+    if (query.statuses.length) params.set("statuses", query.statuses.join(","));
+    if (extra.loss) params.set("loss", "1");
+    if (extra.unpaid) params.set("unpaid", "1");
+    return `/pesanan?${params.toString()}`;
+  }
+
   return (
     <div>
       {error ? <div className="warnbox">{error}</div> : null}
@@ -245,10 +259,29 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <>
               <PerTable title="Penjualan per Toko" rows={(report?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} compareRows={(previous?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} metric={metric} compare={compare} showMarketing />
               <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
+              <StoreMoneyList
+                title="Pesanan rugi"
+                hint="profit di bawah nol, termasuk retur · klik untuk membuka pesanan"
+                rows={report?.lossStores ?? []}
+                valueLabel="Total rugi"
+                loading={loading}
+                href={(row) => orderHref({ loss: true, channel: row.channel, store: row.storeName })}
+                value={(row) => row.loss ?? 0}
+              />
+              <StoreMoneyList
+                title="Belum ada pembayaran"
+                hint="channel marketplace saja, belum ada settlement · klik untuk membuka pesanan"
+                rows={(report?.unpaidStores ?? []).filter((row) => isMarketplaceChannel(row.channel))}
+                valueLabel="Revenue bersih"
+                loading={loading}
+                href={(row) => orderHref({ unpaid: true, channel: row.channel, store: row.storeName })}
+                value={(row) => row.net ?? 0}
+              />
               <div className="card mt"><h3>Penjualan per Channel <small>{METRIC_LABEL[metric]}</small></h3><Donut items={(report?.channels ?? []).map((row, index) => ({ label: row.key || "—", value: Math.max(0, metricOf(row, metric)), color: CHART_PAL[index % CHART_PAL.length] }))} /></div>
             </>
           ) : (
             <>
+              <TopProfit rows={report?.products ?? []} loading={loading} />
               <PerTable title="Penjualan per Produk" rows={(report?.products ?? []).map((row) => ({ ...row, key: row.name ? `${row.sku} · ${row.name}` : row.sku }))} compareRows={previous?.products} metric={metric} compare={compare} defaultSize={10} />
               <PerTable title="Penjualan per Kategori" rows={report?.categories ?? []} compareRows={previous?.categories} metric={metric} compare={compare} />
               <PerTable title="Penjualan per Brand" rows={report?.brands ?? []} compareRows={previous?.brands} metric={metric} compare={compare} defaultSize={10} />
@@ -275,10 +308,74 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
               <li><b>Marketing Spending</b> mengikuti periode dan filter toko, apa adanya dari report (tanpa PPN). Spend mingguan dihitung utuh bila periodenya masuk jendela, dan diprorata per hari bila hanya sebagian. Tidak dipecah per channel atau SKU. Profit toko menguranginya; profit produk tidak.</li>
               <li><b>HPP</b> = HPP Accurate bulan pesanan (posisi tanggal 1) = DPP × 1,11. Jika snapshot bulan hilang, dipakai bulan sebelumnya. SKU yang sama sekali belum punya HPP dihitung 0.</li>
               <li>Pesanan <b>Dihapus</b> tidak dihitung. Pesanan <b>-R</b> (Barang Hilang, harga 0) ikut dihitung. RETURNED ikut kecuali difilter keluar.</li>
+              <li><b>Belum ada pembayaran</b> hanya channel marketplace. Website, penjualan internal/staf, dan POS offline tidak masuk.</li>
             </ul>
           </div>
         </>
       ) : <div className="card" style={{ position: "relative" }}>{loading ? <div className="table-loading" role="status"><Spinner /> Memuat…</div> : "Memuat…"}</div>}
+    </div>
+  );
+}
+
+function StoreMoneyList({ title, hint, rows, valueLabel, loading, href, value }: {
+  title: string;
+  hint: string;
+  rows: { channel: string; storeName: string; orders: number; loss?: number; net?: number }[];
+  valueLabel: string;
+  loading: boolean;
+  href: (row: { channel: string; storeName: string; orders: number }) => string;
+  value: (row: { loss?: number; net?: number }) => number;
+}) {
+  const page = useClientPage(rows, `dash-${title}`, 10);
+  return (
+    <div className="tablecard mt">
+      <div className="th3"><b>{title}</b> <small className="mut">{hint}</small></div>
+      <TableShell loading={loading}>
+        <div className="tscroll">
+          <table className="small cards">
+            <thead><tr><th>Channel</th><th>Toko</th><th className="n">Pesanan</th><th className="n">{valueLabel}</th></tr></thead>
+            <tbody>
+              {page.shown.map((row) => (
+                <tr key={`${row.channel}-${row.storeName}`}>
+                  <td data-label="Channel"><Link href={href(row)}>{row.channel || "—"}</Link></td>
+                  <td data-label="Toko"><Link href={href(row)}>{row.storeName || "—"}</Link></td>
+                  <td data-label="Pesanan" className="n">{numId(row.orders)}</td>
+                  <td data-label={valueLabel} className="n">{rp(value(row))}</td>
+                </tr>
+              ))}
+              {!page.shown.length ? <tr><td colSpan={4} className="mut">Tidak ada data</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page.page} pageSize={page.pageSize} total={page.total} shown={page.shown.length} onPage={page.setPage} onPageSize={page.setPageSize} />
+      </TableShell>
+    </div>
+  );
+}
+
+function TopProfit({ rows, loading }: { rows: DashboardReport["products"]; loading: boolean }) {
+  const top = [...rows].sort((a, b) => (b.profit ?? 0) - (a.profit ?? 0)).slice(0, 10);
+  return (
+    <div className="tablecard mt">
+      <div className="th3"><b>Top 10 produk menurut profit</b> <small className="mut">revenue bersih − HPP − biaya SKU</small></div>
+      <TableShell loading={loading}>
+        <div className="tscroll">
+          <table className="small cards">
+            <thead><tr><th>SKU</th><th className="n">Qty</th><th className="n">Revenue bersih</th><th className="n">Profit</th></tr></thead>
+            <tbody>
+              {top.map((row) => (
+                <tr key={row.sku}>
+                  <td data-label="SKU">{row.sku}<div className="mut">{row.name}</div>{row.miss ? <div className="pill p-warn">HPP belum lengkap</div> : null}</td>
+                  <td data-label="Qty" className="n">{numId(row.qty)}</td>
+                  <td data-label="Revenue" className="n">{rp(row.net)}</td>
+                  <td data-label="Profit" className="n">{rp(row.profit ?? 0)}</td>
+                </tr>
+              ))}
+              {!top.length ? <tr><td colSpan={4} className="mut">Tidak ada data</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </TableShell>
     </div>
   );
 }
