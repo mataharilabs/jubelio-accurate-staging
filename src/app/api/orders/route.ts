@@ -17,6 +17,8 @@ export async function GET(request: Request) {
       channels: (url.searchParams.get("channels") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
       stores: (url.searchParams.get("stores") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
       sync: url.searchParams.get("sync") === "need" || url.searchParams.get("sync") === "done" ? url.searchParams.get("sync") as "need" | "done" : "",
+      loss: url.searchParams.get("loss") === "1" || url.searchParams.get("loss") === "true",
+      unpaid: url.searchParams.get("unpaid") === "1" || url.searchParams.get("unpaid") === "true",
       q: url.searchParams.get("q") ?? "",
       page: Number.isFinite(page) ? page : 0,
       pageSize: clampPageSize(url.searchParams.get("limit") ?? url.searchParams.get("pageSize"), 25),

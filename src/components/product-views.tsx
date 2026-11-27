@@ -9,7 +9,7 @@ import { numId, rp } from "@/lib/format";
 
 type Catalog = { id: string; name: string; active: boolean; code?: string; note?: string; updatedAt?: string | null; updatedBy?: string | null };
 type Product = { sku: string; name: string; categoryId: string | null; categoryName: string | null; brandId: string | null; brandName: string | null; accurateFound: string; hpp: number | null; hppSource: string | null; hppDate: string | null; hppCarried?: boolean; hppUpdatedAt?: string | null; active?: boolean };
-type Rank = { sku?: string; name: string; category?: string; brand?: string; qty: number; net: number; hpp?: number | null; profit?: number | null; carried?: boolean };
+type Rank = { sku?: string; name: string; category?: string; brand?: string; qty: number; net: number; hpp?: number | null; profit?: number | null; carried?: boolean; miss?: boolean };
 type HppRun = { id?: string; status?: string; error?: string | null; okCount?: number; notFoundCount?: number; errorCount?: number; startedAt?: string; months?: string[] };
 type Report = { coverage: { skus: number; withHpp: number; percent: number }; byNet: Rank[]; byQty: Rank[]; byProfit: Rank[]; brandsByNet: Rank[]; brandsByProfit: Rank[]; categoriesByNet: Rank[]; categoriesByProfit: Rank[] };
 
@@ -24,15 +24,14 @@ const RANKS: { key: keyof Report; title: string }[] = [
 ];
 
 function gp(row: Rank): string {
-  if (row.profit == null) return row.sku ? "HPP belum ada" : "—";
+  if (row.profit == null) return "—";
   const pct = row.net ? Math.round((1000 * row.profit) / row.net) / 10 : 0;
   return `${rp(row.profit)} (${pct}%)`;
 }
 
 function hppText(row: Rank): string {
-  if (row.hpp == null && row.profit == null && row.sku) return "HPP belum ada";
-  if (row.hpp == null) return row.profit != null ? "HPP per bulan" : "—";
-  return `${rp(row.hpp)}${row.carried ? " · HPP bulan sebelumnya" : ""}`;
+  const note = row.miss ? " · HPP belum lengkap" : row.carried ? " · HPP bulan sebelumnya" : "";
+  return `${rp(row.hpp ?? 0)}${note}`;
 }
 
 function productHpp(row: Product): string {
@@ -106,7 +105,7 @@ export function ProductDashboard() {
           </div>
           <div className="f"><label>&nbsp;</label><ActionButton className="btn sm" onClick={() => { if (!report) return; return import("xlsx").then((XLSX) => { const rows = RANKS.flatMap((rank) => ((report[rank.key] as Rank[]) ?? []).map((row) => ({ Peringkat: rank.title, Nama: row.name, SKU: row.sku ?? "", Qty: row.qty, "Revenue bersih": row.net, HPP: row.hpp ?? "", "Laba kotor": row.profit ?? "" }))); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(rows), "Produk"); XLSX.writeFile(book, "produk.xlsx"); reportedOk("Excel diunduh."); }).catch((err: Error) => setError(reported(err, "Ekspor gagal."))); }}>Excel</ActionButton></div>
         </div>
-        <div className="note mt">Cakupan HPP {report ? `${report.coverage.percent}% (${report.coverage.withHpp}/${report.coverage.skus} SKU)` : "…"}. RETURNED ikut terhitung. Batal tidak ikut, kecuali dipilih di filter. Laba memakai HPP bulan penjualan. Jika bulan itu belum ada, dipakai HPP bulan sebelumnya.</div>
+        <div className="note mt">Cakupan HPP {report ? `${report.coverage.percent}% (${report.coverage.withHpp}/${report.coverage.skus} SKU)` : "…"}. RETURNED ikut terhitung. Batal tidak ikut, kecuali dipilih di filter. Laba = revenue bersih − HPP DPP × 1,11 − biaya SKU. SKU tanpa HPP dihitung 0 dan ditandai HPP belum lengkap.</div>
       </div>
       <div className="grid g2 mt" style={{ position: "relative" }}>
         {loading ? <div className="table-loading" role="status"><Spinner /> Memuat…</div> : null}

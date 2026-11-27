@@ -17,7 +17,7 @@ import { AppError } from "@/lib/errors";
 import { fail, requirePermission } from "@/lib/http";
 import type { Permission } from "@/lib/auth/permissions";
 
-async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string; dataStatus?: "active" | "deleted" | "all"; channels?: string[]; stores?: string[]; sync?: "" | "need" | "done" }): Promise<OrderPageRow[]> {
+async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string; dataStatus?: "active" | "deleted" | "all"; channels?: string[]; stores?: string[]; sync?: "" | "need" | "done"; loss?: boolean; unpaid?: boolean }): Promise<OrderPageRow[]> {
   const rows: OrderPageRow[] = [];
   let page = 0;
   for (;;) {
@@ -45,6 +45,8 @@ export async function POST(request: Request) {
       channels?: string[];
       stores?: string[];
       sync?: "" | "need" | "done";
+      loss?: boolean;
+      unpaid?: boolean;
       nos?: string[];
       allowLargePdf?: boolean;
       days?: string[];
@@ -68,6 +70,8 @@ export async function POST(request: Request) {
         channels: body.channels,
         stores: body.stores,
         sync: body.sync,
+        loss: body.loss,
+        unpaid: body.unpaid,
       });
       if (body.nos?.length) {
         const wanted = new Set(body.nos);

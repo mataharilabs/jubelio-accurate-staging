@@ -235,13 +235,16 @@ export type DashboardQuery = {
   categories?: string[];
 };
 
-export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; profit?: number; marketing?: number; brand?: string; category?: string; name?: string; miss?: boolean };
+export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; fee?: number; profit?: number; marketing?: number; brand?: string; category?: string; name?: string; miss?: boolean };
 export type ProductRow = GroupRow & { sku: string; name: string; share: number };
-export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number; gross?: number; hpp?: number; profit?: number };
+export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number; gross?: number; hpp?: number; fee?: number; profit?: number };
+
+export type StoreLossRow = { channel: string; storeName: string; orders: number; loss: number };
+export type StoreUnpaidRow = { channel: string; storeName: string; orders: number; net: number };
 
 export type DashboardReport = {
   kpis: { gross: number; disc: number; net: number; orders: number; qty: number; aov: number; days: number; hpp: number; fee: number; marketing: number; profit: number; missingSkus: number; missingSkuSample?: string[] };
-  trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; profit?: number; marketing?: number }[];
+  trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; fee?: number; profit?: number; marketing?: number }[];
   channels: GroupRow[];
   stores: GroupRow[];
   products: ProductRow[];
@@ -249,6 +252,8 @@ export type DashboardReport = {
   cities: GeoRow[];
   brands?: GroupRow[];
   categories?: GroupRow[];
+  lossStores?: StoreLossRow[];
+  unpaidStores?: StoreUnpaidRow[];
 };
 
 export type FilterOptions = {
@@ -285,6 +290,8 @@ export type OrderQuery = {
   channels?: string[];
   stores?: string[];
   sync?: "" | "need" | "done";
+  loss?: boolean;
+  unpaid?: boolean;
   q: string;
   page: number;
   pageSize: number;
@@ -315,7 +322,9 @@ export type OrderPageRow = {
   status: string;
   flags: string[];
   hpp?: number | null;
+  hppMissing?: boolean;
   grossProfit?: number | null;
+  orderProfit?: number | null;
   dataStatus?: "active" | "deleted";
   contentUpdatedAt?: string | null;
   returnCase?: 1 | 2 | 3 | null;
