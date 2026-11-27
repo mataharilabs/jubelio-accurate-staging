@@ -1,23 +1,368 @@
--- Unpaid orders are marketplace channels only.
--- Additive. Replaces dashboard_report and orders_page from 0016_order_fees.sql.
--- Does not touch batches, sales_lines, or order rows.
+-- Payments, the unpaid rule, and fee SKUs that are not on the order.
+-- 0016_order_fees.sql is already applied. Do not edit it. This file replaces
+-- sku_fee_shares, dashboard_report, and orders_page, and adds order_payments.
+-- Does not touch batches, sales_lines, or order rows. Soft-delete only.
 --
--- Apply by hand after 0016_order_fees.sql.
--- Confirm: select public.is_marketplace_channel('Shopee'), public.is_marketplace_channel('Website');
+-- Apply by hand after 0016. Confirm:
+--   select to_regclass('public.order_payments');
+--   select proname from pg_proc where proname = 'payments_apply';
 
-create or replace function public.is_marketplace_channel(p_channel text)
-returns boolean
+-- Drop the marketplace-only helper if an earlier draft of this file was applied.
+drop function if exists public.is_marketplace_channel(text);
+
+-- Fee rows whose SKU is not among the order's line SKUs (Lazada MRI001001L-10 vs line MRI001001L,
+-- Blibli 40100083 vs 40100083-01) are spread by sales share, same as a null SKU.
+-- Direct rows are only (no_pesanan, sku) pairs that exist on the order lines.
+create or replace function public.sku_fee_shares(p_orders text[], p_profit_only boolean default true)
+returns table (no_pesanan text, sku text, fee numeric)
 language sql
-immutable
+stable
 security invoker
 set search_path = public
 as $$
-  select coalesce(btrim(p_channel), '') <> ''
-    and btrim(p_channel) !~* '(website|webstore|web[[:space:]-]?store|offline|\mpos\M|internal|staff|kasir|\mmanual\M)';
+  with lines as (
+    select v.no_pesanan, l.sku,
+      sum(coalesce(l.revenue_per_unit, 0) * l.qty) as revenue,
+      sum(l.qty) as qty
+    from public.order_versions v
+    join public.order_lines l on l.version_id = v.id
+    where v.is_current
+      and v.source not in ('cancel', 'manual_delete')
+      and v.no_pesanan = any(coalesce(p_orders, '{}'::text[]))
+      and coalesce(l.sku, '') <> ''
+    group by v.no_pesanan, l.sku
+  ),
+  orders as (
+    select no_pesanan, sum(revenue) as revenue, sum(qty) as qty, count(*) as n
+    from lines
+    group by no_pesanan
+  ),
+  direct as (
+    select f.no_pesanan, f.sku, sum(f.amount_rp) as fee
+    from public.order_fees f
+    where f.deleted_at is null
+      and f.sku is not null
+      and (not p_profit_only or f.reduces_profit)
+      and f.no_pesanan = any(coalesce(p_orders, '{}'::text[]))
+      and exists (select 1 from lines l where l.no_pesanan = f.no_pesanan and l.sku = f.sku)
+    group by f.no_pesanan, f.sku
+  ),
+  shared as (
+    select f.no_pesanan, sum(f.amount_rp) as fee
+    from public.order_fees f
+    where f.deleted_at is null
+      and (
+        f.sku is null
+        or not exists (select 1 from lines l where l.no_pesanan = f.no_pesanan and l.sku = f.sku)
+      )
+      and (not p_profit_only or f.reduces_profit)
+      and f.no_pesanan = any(coalesce(p_orders, '{}'::text[]))
+    group by f.no_pesanan
+  ),
+  shares as (
+    select
+      l.no_pesanan,
+      l.sku,
+      case
+        when o.revenue <> 0 then l.revenue / o.revenue
+        when o.qty <> 0 then l.qty / o.qty
+        else 1.0 / o.n
+      end as share,
+      row_number() over (partition by l.no_pesanan order by l.sku) as rn,
+      count(*) over (partition by l.no_pesanan) as cnt
+    from lines l
+    join orders o on o.no_pesanan = l.no_pesanan
+  ),
+  shared_parts as (
+    select
+      s.no_pesanan,
+      s.sku,
+      s.rn,
+      s.cnt,
+      coalesce(sh.fee, 0) as total_fee,
+      case when s.rn < s.cnt then round(coalesce(sh.fee, 0) * s.share, 2) else 0 end as partial
+    from shares s
+    left join shared sh on sh.no_pesanan = s.no_pesanan
+  ),
+  shared_split as (
+    select
+      no_pesanan,
+      sku,
+      case
+        when total_fee = 0 then 0
+        when rn < cnt then partial
+        else total_fee - coalesce(sum(partial) over (partition by no_pesanan), 0)
+      end as fee
+    from shared_parts
+  )
+  select no_pesanan, sku, sum(fee) as fee
+  from (
+    select no_pesanan, sku, fee from direct
+    union all
+    select no_pesanan, sku, fee from shared_split where fee <> 0
+  ) combined
+  group by no_pesanan, sku;
 $$;
 
-revoke all on function public.is_marketplace_channel(text) from public, anon;
-grant execute on function public.is_marketplace_channel(text) to authenticated, service_role;
+revoke all on function public.sku_fee_shares(text[], boolean) from public, anon;
+grant execute on function public.sku_fee_shares(text[], boolean) to authenticated, service_role;
+
+create table if not exists public.order_payments (
+  id uuid primary key default gen_random_uuid(),
+  no_pesanan text not null,
+  amount_rp numeric not null,
+  paid_at date not null default current_date,
+  method text not null default '',
+  note text not null default '',
+  source text not null default 'manual',
+  import_id uuid,
+  created_at timestamptz not null default now(),
+  created_by text not null default '',
+  deleted_at timestamptz,
+  deleted_by text,
+  constraint order_payments_source_check check (source in ('manual', 'template'))
+);
+
+create index if not exists order_payments_active_order_idx
+  on public.order_payments (no_pesanan)
+  where deleted_at is null;
+
+alter table public.order_payments enable row level security;
+revoke all on public.order_payments from public, anon;
+grant select, insert, update, delete on public.order_payments to authenticated, service_role;
+
+drop policy if exists "admin order payments" on public.order_payments;
+create policy "admin order payments" on public.order_payments
+  for all to authenticated using (true) with check (true);
+
+create or replace function public.payments_apply(p jsonb)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_actor text := coalesce(p->>'actor', '');
+  v_action text := coalesce(nullif(p->>'action', ''), 'save');
+  v_source text := coalesce(nullif(p->>'source', ''), 'manual');
+  v_import uuid := nullif(p->>'importId', '')::uuid;
+  v_rows jsonb := coalesce(p->'rows', '[]'::jsonb);
+  v_inserted integer := 0;
+  v_replaced integer := 0;
+  v_skipped integer := 0;
+begin
+  if v_action = 'delete' then
+    with removed as (
+      update public.order_payments
+      set deleted_at = now(), deleted_by = v_actor
+      where deleted_at is null
+        and id in (
+          select value::uuid from jsonb_array_elements_text(coalesce(p->'ids', '[]'::jsonb)) as value
+        )
+      returning 1
+    )
+    select count(*) into v_replaced from removed;
+    return jsonb_build_object('inserted', 0, 'replaced', coalesce(v_replaced, 0), 'skipped', 0);
+  end if;
+
+  if v_source not in ('manual', 'template') then
+    raise exception 'Sumber pembayaran tidak dikenal.';
+  end if;
+  if jsonb_typeof(v_rows) <> 'array' or jsonb_array_length(v_rows) = 0 then
+    raise exception 'Tidak ada pembayaran untuk disimpan.';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('payments'));
+
+  with incoming as (
+    select distinct on (btrim(r.no_pesanan))
+      btrim(r.no_pesanan) as no_pesanan,
+      r.amount_rp,
+      coalesce(r.paid_at, current_date) as paid_at,
+      coalesce(r.method, '') as method,
+      coalesce(r.note, '') as note
+    from jsonb_to_recordset(v_rows) as r(
+      no_pesanan text, amount_rp numeric, paid_at date, method text, note text
+    )
+    where coalesce(btrim(r.no_pesanan), '') <> ''
+      and r.amount_rp is not null
+    order by btrim(r.no_pesanan), r.paid_at desc nulls last
+  ),
+  known as (
+    select i.*
+    from incoming i
+    where exists (
+      select 1 from public.order_versions v
+      where v.no_pesanan = i.no_pesanan
+        and v.is_current
+        and v.source not in ('cancel', 'manual_delete')
+        and coalesce(v.status, '') not in ('CANCELED', 'CANCELLED', 'CANCEL')
+    )
+  ),
+  removed as (
+    update public.order_payments pay
+    set deleted_at = now(), deleted_by = v_actor
+    where pay.deleted_at is null
+      and pay.no_pesanan in (select no_pesanan from known)
+    returning 1
+  ),
+  inserted as (
+    insert into public.order_payments (
+      no_pesanan, amount_rp, paid_at, method, note, source, import_id, created_by
+    )
+    select no_pesanan, amount_rp, paid_at, method, note, v_source, v_import, v_actor
+    from known
+    returning 1
+  )
+  select
+    (select count(*) from inserted),
+    (select count(*) from removed),
+    (select count(*) from incoming) - (select count(*) from known)
+  into v_inserted, v_replaced, v_skipped;
+
+  return jsonb_build_object(
+    'inserted', coalesce(v_inserted, 0),
+    'replaced', coalesce(v_replaced, 0),
+    'skipped', coalesce(v_skipped, 0)
+  );
+end;
+$$;
+
+revoke all on function public.payments_apply(jsonb) from public, anon, authenticated;
+grant execute on function public.payments_apply(jsonb) to service_role;
+
+create or replace function public.payments_page(p jsonb)
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  with bounds as (
+    select
+      lower(coalesce(p->>'q', '')) as q,
+      greatest(coalesce((p->>'page')::integer, 0), 0) as page_no,
+      least(greatest(coalesce((p->>'pageSize')::integer, 25), 1), 2000) as size
+  ),
+  listed as (
+    select
+      pay.id,
+      pay.no_pesanan,
+      coalesce(v.channel, '') as channel,
+      coalesce(v.store_name, '') as store_name,
+      coalesce(net.net, 0) as net,
+      pay.amount_rp,
+      pay.amount_rp - coalesce(net.net, 0) as diff,
+      pay.paid_at,
+      pay.method,
+      pay.note,
+      pay.created_by,
+      pay.created_at
+    from public.order_payments pay
+    left join public.order_versions v on v.no_pesanan = pay.no_pesanan and v.is_current
+    left join lateral (
+      select sum(s.line_revenue) as net
+      from public.v_sales_current s
+      where s.no_pesanan = pay.no_pesanan
+    ) net on true
+    cross join bounds b
+    where pay.deleted_at is null
+      and (
+        b.q = ''
+        or lower(pay.no_pesanan) like '%' || b.q || '%'
+        or lower(coalesce(v.channel, '')) like '%' || b.q || '%'
+        or lower(coalesce(v.store_name, '')) like '%' || b.q || '%'
+      )
+  ),
+  counted as (
+    select count(*) as total from listed
+  )
+  select jsonb_build_object(
+    'total', coalesce((select total from counted), 0),
+    'page', (select page_no from bounds),
+    'pages', greatest(1, ceil(coalesce((select total from counted), 0)::numeric / (select size from bounds))),
+    'rows', coalesce((
+      select jsonb_agg(to_jsonb(t) order by t."paidAt" desc, t."noPesanan")
+      from (
+        select
+          id,
+          no_pesanan as "noPesanan",
+          channel,
+          store_name as "storeName",
+          net,
+          amount_rp as "amountRp",
+          diff,
+          to_char(paid_at, 'YYYY-MM-DD') as "paidAt",
+          method,
+          note,
+          created_by as "createdBy"
+        from listed
+        order by paid_at desc, no_pesanan
+        offset (select page_no from bounds) * (select size from bounds)
+        limit (select size from bounds)
+      ) t
+    ), '[]'::jsonb)
+  );
+$$;
+
+revoke all on function public.payments_page(jsonb) from public, anon;
+grant execute on function public.payments_page(jsonb) to authenticated, service_role;
+
+create or replace function public.payment_order_lookup(p jsonb)
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  with hit as (
+    select v.no_pesanan, v.channel, v.store_name, v.status
+    from public.order_versions v
+    where v.is_current
+      and v.no_pesanan = btrim(coalesce(p->>'noPesanan', ''))
+      and v.source not in ('cancel', 'manual_delete')
+    limit 1
+  ),
+  net as (
+    select coalesce(sum(s.line_revenue), 0) as net
+    from public.v_sales_current s
+    where s.no_pesanan = (select no_pesanan from hit)
+  ),
+  flags as (
+    select
+      exists (
+        select 1 from public.order_fees f
+        where f.deleted_at is null and f.no_pesanan = (select no_pesanan from hit)
+      ) as has_fee,
+      exists (
+        select 1 from public.order_payments pay
+        where pay.deleted_at is null and pay.no_pesanan = (select no_pesanan from hit)
+      ) as has_payment
+  )
+  select case
+    when not exists (select 1 from hit) then jsonb_build_object('found', false)
+    else jsonb_build_object(
+      'found', true,
+      'noPesanan', (select no_pesanan from hit),
+      'channel', (select channel from hit),
+      'storeName', (select store_name from hit),
+      'net', (select net from net),
+      'cancelled', coalesce((select status from hit), '') in ('CANCELED', 'CANCELLED', 'CANCEL'),
+      'paidVia', case
+        when (select has_fee from flags) then 'settlement'
+        when (select has_payment from flags) then 'manual'
+        else null
+      end,
+      'unpaid', (select net from net) <> 0
+        and not (select has_fee from flags)
+        and not (select has_payment from flags)
+        and coalesce((select status from hit), '') not in ('CANCELED', 'CANCELLED', 'CANCEL')
+    )
+  end;
+$$;
+
+revoke all on function public.payment_order_lookup(jsonb) from public, anon;
+grant execute on function public.payment_order_lookup(jsonb) to authenticated, service_role;
 
 create or replace function public.dashboard_report(p jsonb)
 returns jsonb
@@ -91,15 +436,24 @@ begin
     from filtered
     group by no_pesanan
   ),
+  recorded as (
+    select no_pesanan
+    from public.order_payments
+    where deleted_at is null
+      and no_pesanan in (select no_pesanan from stats)
+    group by no_pesanan
+  ),
   stats_fee as (
     select
       s.*,
       coalesce(f.fee, 0) as fee,
       (paid_row.no_pesanan is not null) as has_fee,
+      (rec.no_pesanan is not null) as has_payment,
       s.net - s.hpp - coalesce(f.fee, 0) as profit
     from stats s
     left join order_fee_visible f on f.no_pesanan = s.no_pesanan
     left join paid paid_row on paid_row.no_pesanan = s.no_pesanan
+    left join recorded rec on rec.no_pesanan = s.no_pesanan
   ),
   kpis as (
     select
@@ -148,7 +502,8 @@ begin
       coalesce(sum(line_revenue), 0) as net,
       coalesce(sum(hpp_line), 0) as hpp,
       coalesce(sum(line_qty), 0) as qty,
-      bool_or(hpp_miss) as miss
+      bool_or(hpp_miss) as miss,
+      max(status) as status
     from filtered
     group by sku, no_pesanan
   ),
@@ -163,6 +518,18 @@ begin
       coalesce(sum(fee), 0) as fee, coalesce(sum(qty), 0) as qty, count(*) as orders, bool_or(miss) as miss
     from product_fee
     group by sku
+  ),
+  top_profit as (
+    select sku, max(name) as name,
+      coalesce(sum(qty), 0) as qty,
+      coalesce(sum(net), 0) as net,
+      coalesce(sum(net - hpp - fee), 0) as profit,
+      bool_or(miss) as miss
+    from product_fee
+    where coalesce(status, '') not in ('CANCELED', 'CANCELLED', 'CANCEL')
+    group by sku
+    order by profit desc
+    limit 10
   ),
   brand_rows as (
     select brand as key, coalesce(sum(gross), 0) as gross, coalesce(sum(net), 0) as net,
@@ -215,14 +582,16 @@ begin
     select channel, store_name, count(*) as orders, sum(profit) as loss
     from stats_fee
     where profit < 0
+      and coalesce(status, '') not in ('CANCELED', 'CANCELLED', 'CANCEL')
     group by channel, store_name
   ),
   unpaid_stores as (
     select channel, store_name, count(*) as orders, sum(net) as net
     from stats_fee
     where not has_fee
-      and upper(coalesce(status, '')) not like 'CANCEL%'
-      and public.is_marketplace_channel(channel)
+      and not has_payment
+      and coalesce(net, 0) <> 0
+      and coalesce(status, '') not in ('CANCELED', 'CANCELLED', 'CANCEL')
     group by channel, store_name
   )
   select jsonb_build_object(
@@ -246,6 +615,9 @@ begin
       'sku', sku, 'key', sku, 'name', name, 'brand', brand, 'category', category,
       'gross', gross, 'net', net, 'hpp', hpp, 'fee', fee, 'profit', net - hpp - fee, 'qty', qty, 'orders', orders, 'miss', miss
     ) order by net desc) from products), '[]'::jsonb),
+    'topProfit', coalesce((select jsonb_agg(jsonb_build_object(
+      'sku', sku, 'name', name, 'qty', qty, 'net', net, 'profit', profit, 'miss', miss
+    ) order by profit desc) from top_profit), '[]'::jsonb),
     'brands', coalesce((select jsonb_agg(jsonb_build_object(
       'key', key, 'gross', gross, 'net', net, 'hpp', hpp, 'fee', fee, 'profit', net - hpp - fee, 'qty', qty, 'orders', orders
     ) order by net desc) from brand_rows), '[]'::jsonb),
@@ -372,23 +744,35 @@ as $$
       end as line_fee
     from lined l
   ),
+  raw_pay as (
+    select no_pesanan
+    from public.order_payments
+    where deleted_at is null
+      and no_pesanan in (select no_pesanan from base)
+    group by no_pesanan
+  ),
   order_profit as (
     select
       pr.no_pesanan,
+      sum(pr.line_revenue) as net,
       sum(pr.line_revenue) - sum(pr.hpp_amt) - coalesce(max(r.fee), 0) as profit,
       coalesce(bool_or(r.has_fee), false) as has_fee,
-      bool_or(upper(coalesce(pr.status, '')) like 'CANCEL%') as cancelled
+      bool_or(pay.no_pesanan is not null) as has_payment,
+      bool_or(coalesce(pr.status, '') in ('CANCELED', 'CANCELLED', 'CANCEL')) as cancelled
     from priced pr
     left join raw_fee r on r.no_pesanan = pr.no_pesanan
+    left join raw_pay pay on pay.no_pesanan = pr.no_pesanan
     group by pr.no_pesanan
   ),
   filtered as (
-    select pr.*, op.profit as order_profit
+    select pr.*, op.profit as order_profit, op.has_fee as order_has_fee, op.has_payment as order_has_payment
     from priced pr
     join order_profit op on op.no_pesanan = pr.no_pesanan
     cross join bounds b
-    where (not b.want_loss or op.profit < 0)
-      and (not b.want_unpaid or (not op.has_fee and not op.cancelled and public.is_marketplace_channel(pr.channel)))
+    where (not b.want_loss or (op.profit < 0 and not op.cancelled))
+      and (not b.want_unpaid or (
+        not op.has_fee and not op.has_payment and not op.cancelled and op.net <> 0
+      ))
   ),
   counted as (
     select count(*) as total, count(distinct no_pesanan) as orders from filtered
@@ -429,6 +813,11 @@ as $$
           hpp_missing as "hppMissing",
           line_revenue - hpp_amt - line_fee as "grossProfit",
           order_profit as "orderProfit",
+          case
+            when order_has_fee then 'settlement'
+            when order_has_payment then 'manual'
+            else null
+          end as "paidVia",
           data_status as "dataStatus",
           to_char(content_updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') as "contentUpdatedAt",
           return_case as "returnCase",

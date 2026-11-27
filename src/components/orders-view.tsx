@@ -348,7 +348,7 @@ export function OrdersView() {
                 return (
                 <tr key={row.lineId} className={row.dataStatus === "deleted" ? "deleted" : ""}>
                   <td><input type="checkbox" checked={picked.has(row.noPesanan)} onChange={(event) => setPicked((current) => { const next = new Set(current); if (event.target.checked) next.add(row.noPesanan); else next.delete(row.noPesanan); return next; })} /></td>
-                  <td data-label="No pesanan">{row.noPesanan}{row.source === "manual" ? <div className="pill p-gray">Manual</div> : null}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
+                  <td data-label="No pesanan">{row.noPesanan}{row.source === "manual" ? <div className="pill p-gray">Manual</div> : null}{row.paidVia === "manual" ? <div className="pill p-ok">Lunas (manual)</div> : null}{row.paidVia === "settlement" ? <div className="pill p-gray">Settlement</div> : null}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
                   <td data-label="Tanggal">{row.day}</td>
                   <td data-label="Channel">{row.channel}</td>
                   <td data-label="Toko">{row.storeName}</td>

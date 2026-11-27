@@ -109,6 +109,29 @@ describe("marketplace fee parsers", () => {
     ]), "Biaya");
     expect(() => parseFeeWorkbook(bad)).toThrow(/Grup biaya/);
   });
+
+  it("reads a Pembayaran sheet on its own and beside the fee template", () => {
+    const only = XLSX.read(readFileSync(path.join(process.cwd(), "src/lib/fees/fixtures/pembayaran-only.xlsx")), { type: "buffer" });
+    const parsed = parseFeeWorkbook(only);
+    expect(parsed.rows).toEqual([]);
+    expect(parsed.payments).toEqual([
+      { noPesanan: "WEB-1001", paidAt: "2026-11-01", amountRp: 250000, method: "Transfer", note: "Pelunasan" },
+      { noPesanan: "POS-9", paidAt: "2026-11-02", amountRp: 10000, method: "", note: "" },
+    ]);
+    const both = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(both, XLSX.utils.aoa_to_sheet([
+      ["no_pesanan", "sku", "grup_biaya", "nama_biaya", "nominal", "persen"],
+      ["WEB-1001", "", "Komisi", "Komisi", 500, ""],
+    ]), "Biaya");
+    XLSX.utils.book_append_sheet(both, XLSX.utils.aoa_to_sheet([
+      ["no_pesanan", "tanggal_bayar", "nominal", "metode", "catatan"],
+      ["WEB-1001", "2026-11-03", 9000, "Tunai", ""],
+    ]), "Pembayaran");
+    const mixed = parseFeeWorkbook(both);
+    expect(mixed.rows).toHaveLength(1);
+    expect(mixed.payments?.[0]).toMatchObject({ noPesanan: "WEB-1001", amountRp: 9000, paidAt: "2026-11-03" });
+    expect(mixed.orders.map((order) => order.noPesanan)).toContain("WEB-1001");
+  });
 });
 
 describe("fee allocation", () => {

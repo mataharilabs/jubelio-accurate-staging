@@ -8,7 +8,6 @@ import { ActionButton, reported, reportedOk, Spinner, TableShell } from "@/compo
 import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
 import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
-import { isMarketplaceChannel } from "@/lib/fees/channel";
 import { dayShort } from "@/lib/domain/aggregate";
 import { storeProfit } from "@/lib/marketing/allocate";
 import { currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
@@ -261,7 +260,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
               <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
               <StoreMoneyList
                 title="Pesanan rugi"
-                hint="profit di bawah nol, termasuk retur · klik untuk membuka pesanan"
+                hint="profit di bawah nol, selain batal, termasuk retur dan channel internal · klik untuk membuka pesanan"
                 rows={report?.lossStores ?? []}
                 valueLabel="Total rugi"
                 loading={loading}
@@ -270,8 +269,8 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
               />
               <StoreMoneyList
                 title="Belum ada pembayaran"
-                hint="channel marketplace saja, belum ada settlement · klik untuk membuka pesanan"
-                rows={(report?.unpaidStores ?? []).filter((row) => isMarketplaceChannel(row.channel))}
+                hint="revenue bukan nol, belum ada settlement atau pembayaran · klik untuk membuka pesanan"
+                rows={report?.unpaidStores ?? []}
                 valueLabel="Revenue bersih"
                 loading={loading}
                 href={(row) => orderHref({ unpaid: true, channel: row.channel, store: row.storeName })}
@@ -281,7 +280,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             </>
           ) : (
             <>
-              <TopProfit rows={report?.products ?? []} loading={loading} />
+              <TopProfit rows={report?.topProfit ?? []} loading={loading} />
               <PerTable title="Penjualan per Produk" rows={(report?.products ?? []).map((row) => ({ ...row, key: row.name ? `${row.sku} · ${row.name}` : row.sku }))} compareRows={previous?.products} metric={metric} compare={compare} defaultSize={10} />
               <PerTable title="Penjualan per Kategori" rows={report?.categories ?? []} compareRows={previous?.categories} metric={metric} compare={compare} />
               <PerTable title="Penjualan per Brand" rows={report?.brands ?? []} compareRows={previous?.brands} metric={metric} compare={compare} defaultSize={10} />
@@ -308,7 +307,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
               <li><b>Marketing Spending</b> mengikuti periode dan filter toko, apa adanya dari report (tanpa PPN). Spend mingguan dihitung utuh bila periodenya masuk jendela, dan diprorata per hari bila hanya sebagian. Tidak dipecah per channel atau SKU. Profit toko menguranginya; profit produk tidak.</li>
               <li><b>HPP</b> = HPP Accurate bulan pesanan (posisi tanggal 1) = DPP × 1,11. Jika snapshot bulan hilang, dipakai bulan sebelumnya. SKU yang sama sekali belum punya HPP dihitung 0.</li>
               <li>Pesanan <b>Dihapus</b> tidak dihitung. Pesanan <b>-R</b> (Barang Hilang, harga 0) ikut dihitung. RETURNED ikut kecuali difilter keluar.</li>
-              <li><b>Belum ada pembayaran</b> hanya channel marketplace. Website, penjualan internal/staf, dan POS offline tidak masuk.</li>
+              <li><b>Belum ada pembayaran</b> adalah pesanan yang revenue-nya bukan nol dan belum punya settlement maupun catatan pembayaran. Revenue nol dihitung lunas. Semua channel ikut, termasuk website, offline, dan POS. Retur tetap dihitung.</li>
             </ul>
           </div>
         </>
@@ -353,8 +352,8 @@ function StoreMoneyList({ title, hint, rows, valueLabel, loading, href, value }:
   );
 }
 
-function TopProfit({ rows, loading }: { rows: DashboardReport["products"]; loading: boolean }) {
-  const top = [...rows].sort((a, b) => (b.profit ?? 0) - (a.profit ?? 0)).slice(0, 10);
+function TopProfit({ rows, loading }: { rows: NonNullable<DashboardReport["topProfit"]>; loading: boolean }) {
+  const top = rows.slice(0, 10);
   return (
     <div className="tablecard mt">
       <div className="th3"><b>Top 10 produk menurut profit</b> <small className="mut">revenue bersih − HPP − biaya SKU</small></div>
