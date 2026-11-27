@@ -20,5 +20,11 @@ export function feeTemplate(): Buffer {
     ["persen", "Opsional. Contoh 9 untuk 9%"],
   ]);
   XLSX.utils.book_append_sheet(book, note, "Petunjuk");
+  const payments = XLSX.utils.aoa_to_sheet([
+    ["no_pesanan", "tanggal_bayar", "nominal", "metode", "catatan"],
+    ["WEB-1001", "2026-11-01", 250000, "Transfer", "Pelunasan website"],
+  ]);
+  payments["!cols"] = [{ wch: 22 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 28 }];
+  XLSX.utils.book_append_sheet(book, payments, "Pembayaran");
   return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }

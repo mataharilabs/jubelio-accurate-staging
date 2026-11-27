@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { AppError } from "@/lib/errors";
 import { supabaseConfigured, supabaseServiceKey, supabaseUrl } from "@/lib/env";
 import { applySalesLines } from "@/lib/fees/allocate";
-import type { FeeDraft, Marketplace, SalesLine } from "@/lib/fees/types";
+import type { FeeDraft, Marketplace, PaymentDraft, SalesLine } from "@/lib/fees/types";
 
 const CHUNK = 200;
 
@@ -13,7 +13,7 @@ function client(): SupabaseClient {
 
 function missingMigration(error: { message?: string; code?: string } | null): boolean {
   const text = error?.message ?? "";
-  return error?.code === "PGRST202" || error?.code === "42883" || error?.code === "42P01" || /fee_imports|order_fees|fees_apply|match_fee_orders|fee_report|sku_fee_shares|does not exist|schema cache/i.test(text);
+  return error?.code === "PGRST202" || error?.code === "42883" || error?.code === "42P01" || /fee_imports|order_fees|order_payments|fees_apply|payments_apply|payments_page|payment_order_lookup|match_fee_orders|fee_report|sku_fee_shares|does not exist|schema cache/i.test(text);
 }
 
 function explain(error: { message?: string; code?: string } | null, action: string): never {
@@ -102,6 +102,88 @@ export async function applyFeeChunk(input: {
     replaced: Number(raw.replaced ?? 0),
     skipped: Number(raw.skipped ?? 0),
   };
+}
+
+export async function applyPayments(input: {
+  actor: string;
+  source: "manual" | "template";
+  importId?: string;
+  rows: PaymentDraft[];
+}): Promise<{ inserted: number; replaced: number; skipped: number }> {
+  const { data, error } = await client().rpc("payments_apply", {
+    p: {
+      action: "save",
+      actor: input.actor,
+      source: input.source,
+      importId: input.importId ?? null,
+      rows: input.rows.map((row) => ({
+        no_pesanan: row.noPesanan,
+        amount_rp: row.amountRp,
+        paid_at: row.paidAt,
+        method: row.method,
+        note: row.note,
+      })),
+    },
+  });
+  if (error) explain(error, "menyimpan pembayaran");
+  const raw = (data ?? {}) as { inserted?: number; replaced?: number; skipped?: number };
+  return { inserted: Number(raw.inserted ?? 0), replaced: Number(raw.replaced ?? 0), skipped: Number(raw.skipped ?? 0) };
+}
+
+export async function deletePayments(actor: string, ids: string[]): Promise<{ replaced: number }> {
+  const { data, error } = await client().rpc("payments_apply", { p: { action: "delete", actor, ids } });
+  if (error) explain(error, "menghapus pembayaran");
+  const raw = (data ?? {}) as { replaced?: number };
+  return { replaced: Number(raw.replaced ?? 0) };
+}
+
+export type PaymentRow = {
+  id: string;
+  noPesanan: string;
+  channel: string;
+  storeName: string;
+  net: number;
+  amountRp: number;
+  diff: number;
+  paidAt: string;
+  method: string;
+  note: string;
+  createdBy: string;
+};
+
+export async function listPayments(input: { q: string; page: number; pageSize: number }): Promise<{ total: number; page: number; pages: number; rows: PaymentRow[] }> {
+  const { data, error } = await client().rpc("payments_page", { p: input });
+  if (error) explain(error, "membaca pembayaran");
+  const raw = (data ?? {}) as { total?: number; page?: number; pages?: number; rows?: PaymentRow[] };
+  return {
+    total: Number(raw.total ?? 0),
+    page: Number(raw.page ?? 0),
+    pages: Number(raw.pages ?? 1),
+    rows: (raw.rows ?? []).map((row) => ({
+      ...row,
+      net: Number(row.net ?? 0),
+      amountRp: Number(row.amountRp ?? 0),
+      diff: Number(row.diff ?? 0),
+    })),
+  };
+}
+
+export type OrderLookup = {
+  found: boolean;
+  noPesanan?: string;
+  channel?: string;
+  storeName?: string;
+  net?: number;
+  cancelled?: boolean;
+  paidVia?: "settlement" | "manual" | null;
+  unpaid?: boolean;
+};
+
+export async function lookupPaymentOrder(noPesanan: string): Promise<OrderLookup> {
+  const { data, error } = await client().rpc("payment_order_lookup", { p: { noPesanan } });
+  if (error) explain(error, "mencari pesanan");
+  const raw = (data ?? {}) as OrderLookup;
+  return { ...raw, net: raw.net == null ? undefined : Number(raw.net) };
 }
 
 export type FeeReportKind = "affiliate" | "group" | "sku";

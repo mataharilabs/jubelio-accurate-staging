@@ -254,6 +254,7 @@ export type DashboardReport = {
   categories?: GroupRow[];
   lossStores?: StoreLossRow[];
   unpaidStores?: StoreUnpaidRow[];
+  topProfit?: { sku: string; name: string; qty: number; net: number; profit: number; miss?: boolean }[];
 };
 
 export type FilterOptions = {
@@ -333,6 +334,7 @@ export type OrderPageRow = {
   syncedAt?: string | null;
   synced?: boolean;
   source?: string;
+  paidVia?: "settlement" | "manual" | null;
 };
 
 export type OrderPage = {

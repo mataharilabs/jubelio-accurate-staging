@@ -410,6 +410,14 @@ export class SupabaseStore implements DataStore {
         orders: Number(row.orders ?? 0),
         net: Number(row.net ?? 0),
       })),
+      topProfit: (raw.topProfit ?? []).map((row) => ({
+        sku: String(row.sku ?? ""),
+        name: String(row.name ?? ""),
+        qty: Number(row.qty ?? 0),
+        net: Number(row.net ?? 0),
+        profit: Number(row.profit ?? 0),
+        miss: Boolean(row.miss),
+      })),
     };
     return attachMarketing(report, query);
   }
@@ -466,6 +474,7 @@ export class SupabaseStore implements DataStore {
         hppMissing: Boolean(row.hppMissing),
         grossProfit: row.grossProfit == null ? null : Number(row.grossProfit),
         orderProfit: row.orderProfit == null ? null : Number(row.orderProfit),
+        paidVia: row.paidVia === "manual" || row.paidVia === "settlement" ? row.paidVia : null,
       })),
     };
   }

@@ -1,4 +1,4 @@
-import type { FeeDraft } from "@/lib/fees/types";
+import type { FeeDraft, PaymentDraft } from "@/lib/fees/types";
 
 /** Keep every fee of an order in the same request so a retry cannot delete a partial save. */
 export function chunkFeeRows(rows: readonly FeeDraft[], limit = 700): FeeDraft[][] {
@@ -10,6 +10,26 @@ export function chunkFeeRows(rows: readonly FeeDraft[], limit = 700): FeeDraft[]
   }
   const chunks: FeeDraft[][] = [];
   let current: FeeDraft[] = [];
+  for (const list of groups.values()) {
+    if (current.length && current.length + list.length > limit) {
+      chunks.push(current);
+      current = [];
+    }
+    current.push(...list);
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
+export function chunkPayments(rows: readonly PaymentDraft[], limit = 700): PaymentDraft[][] {
+  const groups = new Map<string, PaymentDraft[]>();
+  for (const row of rows) {
+    const list = groups.get(row.noPesanan) ?? [];
+    list.push(row);
+    groups.set(row.noPesanan, list);
+  }
+  const chunks: PaymentDraft[][] = [];
+  let current: PaymentDraft[] = [];
   for (const list of groups.values()) {
     if (current.length && current.length + list.length > limit) {
       chunks.push(current);

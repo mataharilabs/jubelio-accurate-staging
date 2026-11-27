@@ -55,6 +55,8 @@ export function OrdersView() {
   const [channel, setChannel] = useState("");
   const [storeName, setStoreName] = useState("");
   const [sync, setSync] = useState<"" | "need" | "done">("");
+  const [loss, setLoss] = useState(false);
+  const [unpaid, setUnpaid] = useState(false);
   const [dataStatus, setDataStatus] = useState<"active" | "deleted" | "all">("active");
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [channelOptions, setChannelOptions] = useState<string[]>([]);
@@ -80,7 +82,7 @@ export function OrdersView() {
   const [error, setError] = useState<string | null>(null);
   const [salesPush, setSalesPush] = useState(false);
 
-  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize) {
+  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid) {
     const params = new URLSearchParams({ q: nextQ, page: String(nextPage), dataStatus: nextData, limit: String(nextLimit) });
     if (nextFrom) params.set("from", nextFrom);
     if (nextTo) params.set("to", nextTo);
@@ -88,13 +90,15 @@ export function OrdersView() {
     if (nextChannel) params.set("channels", nextChannel);
     if (nextStore) params.set("stores", nextStore);
     if (nextSync) params.set("sync", nextSync);
+    if (nextLoss) params.set("loss", "1");
+    if (nextUnpaid) params.set("unpaid", "1");
     return params.toString();
   }
 
-  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize) {
+  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid) {
     setLoading(true);
     try {
-      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit)}`));
+      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid)}`));
     } finally {
       setLoading(false);
     }
@@ -118,7 +122,22 @@ export function OrdersView() {
   useEffect(() => {
     if (!pageReady || started.current) return;
     started.current = true;
-    load(0, "", "", "", "", "active", "", "", "", pageSize).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
+    const params = new URLSearchParams(window.location.search);
+    const nextFrom = params.get("from") ?? "";
+    const nextTo = params.get("to") ?? "";
+    const nextStatus = params.get("statuses") ?? "";
+    const nextChannel = params.get("channels") ?? "";
+    const nextStore = params.get("stores") ?? "";
+    const nextLoss = params.get("loss") === "1" || params.get("loss") === "true";
+    const nextUnpaid = params.get("unpaid") === "1" || params.get("unpaid") === "true";
+    setFrom(nextFrom);
+    setTo(nextTo);
+    setStatus(nextStatus);
+    setChannel(nextChannel);
+    setStoreName(nextStore);
+    setLoss(nextLoss);
+    setUnpaid(nextUnpaid);
+    load(0, nextFrom, nextTo, nextStatus, "", "active", nextChannel, nextStore, "", pageSize, nextLoss, nextUnpaid).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageReady, pageSize]);
 
@@ -184,12 +203,14 @@ export function OrdersView() {
       format,
       from: from || null,
       to: to || null,
-      statuses: status ? [status] : [],
+      statuses: status ? status.split(",").map((item) => item.trim()).filter(Boolean) : [],
       q,
       dataStatus,
       channels: channel ? [channel] : [],
       stores: storeName ? [storeName] : [],
       sync,
+      loss,
+      unpaid,
       nos: picked.size ? [...picked] : undefined,
     }).then(() => { reportedOk("Ekspor selesai."); }).catch((err: Error) => setError(reported(err, "Ekspor gagal.")));
   }
@@ -272,19 +293,34 @@ export function OrdersView() {
         <div className="f"><label>Status pesanan</label>
           <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(0); load(0, from, to, event.target.value, q, dataStatus).catch((err: Error) => setError(reported(err))); }}>
             <option value="">Semua</option>
+            {status.includes(",") ? <option value={status}>{status}</option> : null}
             {statusOptions.map((item) => <option key={item}>{item}</option>)}
           </select>
         </div>
         <div className="f"><label>Channel</label>
           <select value={channel} onChange={(event) => { setChannel(event.target.value); setPage(0); load(0, from, to, status, q, dataStatus, event.target.value, storeName, sync).catch((err: Error) => setError(reported(err))); }}>
             <option value="">Semua</option>
-            {channelOptions.map((item) => <option key={item}>{item}</option>)}
+            {(channel && !channelOptions.includes(channel) ? [channel, ...channelOptions] : channelOptions).map((item) => <option key={item}>{item}</option>)}
           </select>
         </div>
         <div className="f"><label>Toko</label>
           <select value={storeName} onChange={(event) => { setStoreName(event.target.value); setPage(0); load(0, from, to, status, q, dataStatus, channel, event.target.value, sync).catch((err: Error) => setError(reported(err))); }}>
             <option value="">Semua</option>
-            {storeOptions.map((item) => <option key={item}>{item}</option>)}
+            {(storeName && !storeOptions.includes(storeName) ? [storeName, ...storeOptions] : storeOptions).map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </div>
+        <div className="f"><label>Profit / bayar</label>
+          <select aria-label="Filter rugi atau belum bayar" value={loss ? "loss" : unpaid ? "unpaid" : ""} onChange={(event) => {
+            const nextLoss = event.target.value === "loss";
+            const nextUnpaid = event.target.value === "unpaid";
+            setLoss(nextLoss);
+            setUnpaid(nextUnpaid);
+            setPage(0);
+            load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, nextLoss, nextUnpaid).catch((err: Error) => setError(reported(err)));
+          }}>
+            <option value="">Semua</option>
+            <option value="loss">Rugi</option>
+            <option value="unpaid">Belum ada pembayaran</option>
           </select>
         </div>
         <div className="f"><label>Status data</label>
@@ -312,7 +348,7 @@ export function OrdersView() {
                 return (
                 <tr key={row.lineId} className={row.dataStatus === "deleted" ? "deleted" : ""}>
                   <td><input type="checkbox" checked={picked.has(row.noPesanan)} onChange={(event) => setPicked((current) => { const next = new Set(current); if (event.target.checked) next.add(row.noPesanan); else next.delete(row.noPesanan); return next; })} /></td>
-                  <td data-label="No pesanan">{row.noPesanan}{row.source === "manual" ? <div className="pill p-gray">Manual</div> : null}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
+                  <td data-label="No pesanan">{row.noPesanan}{row.source === "manual" ? <div className="pill p-gray">Manual</div> : null}{row.paidVia === "manual" ? <div className="pill p-ok">Lunas (manual)</div> : null}{row.paidVia === "settlement" ? <div className="pill p-gray">Settlement</div> : null}{row.lossSibling ? <div className="pill p-pur">-R</div> : null}<div className="mut">{row.customerName}</div></td>
                   <td data-label="Tanggal">{row.day}</td>
                   <td data-label="Channel">{row.channel}</td>
                   <td data-label="Toko">{row.storeName}</td>

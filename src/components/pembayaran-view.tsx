@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { ActionButton, reported, reportedOk, Spinner, TableShell } from "@/components/ui/feedback";
 import { api, track } from "@/lib/api-client";
-import { chunkFeeRows, keepMatched } from "@/lib/fees/chunk";
+import { chunkFeeRows, chunkPayments, keepMatched } from "@/lib/fees/chunk";
 import { parseFeeWorkbook, summarizeFees } from "@/lib/fees/parse";
-import type { FeeDraft, FeeGroup, Marketplace, ParsedFees } from "@/lib/fees/types";
+import type { FeeDraft, FeeGroup, Marketplace, ParsedFees, PaymentDraft } from "@/lib/fees/types";
 import { FEE_GROUPS } from "@/lib/fees/types";
 import { rp } from "@/lib/format";
 
@@ -21,8 +21,18 @@ type MatchResult = { matched: { input: string; resolved: string }[]; missing: st
 type Preview = {
   parsed: ParsedFees;
   matchedRows: FeeDraft[];
+  matchedPayments: PaymentDraft[];
   missing: string[];
 };
+
+function keepPayments(rows: readonly PaymentDraft[], matched: readonly { input: string; resolved: string }[]): PaymentDraft[] {
+  const resolved = new Map(matched.map((item) => [item.input, item.resolved]));
+  return rows.flatMap((row) => {
+    const next = resolved.get(row.noPesanan);
+    if (!next) return [];
+    return [next === row.noPesanan ? row : { ...row, noPesanan: next }];
+  });
+}
 
 async function saveBlob(response: Response, filename: string) {
   if (!response.ok) {
@@ -74,7 +84,12 @@ export function PembayaranView() {
         matched.push(...part.matched);
         missing.push(...part.missing);
       }
-      setPreview({ parsed, matchedRows: keepMatched(parsed.rows, matched), missing });
+      setPreview({
+        parsed,
+        matchedRows: keepMatched(parsed.rows, matched),
+        matchedPayments: keepPayments(parsed.payments ?? [], matched),
+        missing,
+      });
     } catch (err) {
       setError(reported(err, "Gagal membaca file."));
     } finally {
@@ -85,19 +100,21 @@ export function PembayaranView() {
   async function save() {
     if (!preview) return;
     const rows = preview.matchedRows;
-    if (!rows.length) {
+    const payments = preview.matchedPayments;
+    if (!rows.length && !payments.length) {
       setError(reported(new Error("Tidak ada pesanan yang cocok untuk disimpan.")));
       return;
     }
     setError(null);
     setSaved(null);
-    const chunks = chunkFeeRows(rows);
     const importId = crypto.randomUUID();
     let inserted = 0;
     let replaced = 0;
+    let paid = 0;
     try {
+      const chunks = chunkFeeRows(rows);
       for (let index = 0; index < chunks.length; index += 1) {
-        setPhase(`Menyimpan ${index + 1}/${chunks.length}…`);
+        setPhase(`Menyimpan biaya ${index + 1}/${chunks.length}…`);
         const result = await api<{ inserted: number; replaced: number }>("/api/fees/commit", {
           method: "POST",
           body: JSON.stringify({
@@ -114,7 +131,16 @@ export function PembayaranView() {
         inserted += result.inserted;
         replaced += result.replaced;
       }
-      setSaved(reportedOk(`Tersimpan ${inserted} baris biaya.${replaced ? ` ${replaced} baris lama diganti.` : ""} Pesanan yang tidak ditemukan tidak disimpan.`));
+      const payChunks = chunkPayments(payments);
+      for (let index = 0; index < payChunks.length; index += 1) {
+        setPhase(`Menyimpan pembayaran ${index + 1}/${payChunks.length}…`);
+        const result = await api<{ inserted: number }>("/api/fees/payments", {
+          method: "POST",
+          body: JSON.stringify({ source: "template", importId, rows: payChunks[index] }),
+        });
+        paid += result.inserted;
+      }
+      setSaved(reportedOk(`Tersimpan ${inserted} baris biaya dan ${paid} pembayaran.${replaced ? ` ${replaced} baris biaya lama diganti.` : ""} Pesanan yang tidak ditemukan tidak disimpan.`));
       setPreview(null);
     } catch (err) {
       setError(reported(err, "Gagal menyimpan biaya."));
@@ -163,6 +189,7 @@ export function PembayaranView() {
             <div><div className="mut small">Cocok</div><b>{preview.parsed.orders.length - preview.missing.length}</b></div>
             <div><div className="mut small">Tidak ditemukan</div><b>{preview.missing.length}</b></div>
             <div><div className="mut small">Total biaya tersimpan</div><b>{rp(summary.total)}</b></div>
+            <div><div className="mut small">Pembayaran cocok</div><b>{preview.matchedPayments.length}</b> · {rp(preview.matchedPayments.reduce((sum, row) => sum + row.amountRp, 0))}</div>
           </div>
           <div className="tscroll mt">
             <table className="small cards">
@@ -216,7 +243,7 @@ export function PembayaranView() {
             </div>
           ) : null}
           <div className="actions mt">
-            <ActionButton className="btn pri" disabled={Boolean(phase) || !preview.matchedRows.length} onClick={() => save()}>Simpan biaya</ActionButton>
+            <ActionButton className="btn pri" disabled={Boolean(phase) || (!preview.matchedRows.length && !preview.matchedPayments.length)} onClick={() => save()}>Simpan</ActionButton>
           </div>
         </div>
       ) : null}

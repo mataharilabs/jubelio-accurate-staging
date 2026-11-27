@@ -44,6 +44,14 @@ export type SalesLine = {
   qty: number;
 };
 
+export type PaymentDraft = {
+  noPesanan: string;
+  paidAt: string;
+  amountRp: number;
+  method: string;
+  note: string;
+};
+
 export type ParsedFees = {
   marketplace: Marketplace;
   format: string;
@@ -51,6 +59,8 @@ export type ParsedFees = {
   /** One entry per order seen in the file, including all-zero settlements. */
   orders: { noPesanan: string; orderId?: string }[];
   readCount: number;
+  /** Rows from a Pembayaran sheet. Empty when the file has no payment sheet. */
+  payments?: PaymentDraft[];
 };
 
 export function isFeeGroup(value: string): value is FeeGroup {

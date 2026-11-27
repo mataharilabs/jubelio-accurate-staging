@@ -194,8 +194,8 @@ export class LocalStore implements DataStore {
         const want = query.dataStatus ?? "active";
         if (!(want === "all" || status === want)) return false;
         const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
-        if (query.loss && net >= 0) return false;
-        if (query.unpaid && isCancelledStatus(version.status)) return false;
+        if (query.loss && (net >= 0 || isCancelledStatus(version.status))) return false;
+        if (query.unpaid && (isCancelledStatus(version.status) || net === 0)) return false;
         return true;
       })
       .flatMap((version) => version.lines.map((line) => ({ version, line })))
