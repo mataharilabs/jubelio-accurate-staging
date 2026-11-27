@@ -44,7 +44,7 @@ as $$
       and (not p_profit_only or f.reduces_profit)
       and (
         not p_profit_only
-        or lower(btrim(coalesce(f.fee_name, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
+        or lower(btrim(coalesce(f.fee_name_original, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
       )
       and f.no_pesanan = any(coalesce(p_orders, '{}'::text[]))
       and exists (select 1 from lines l where l.no_pesanan = f.no_pesanan and l.sku = f.sku)
@@ -61,7 +61,7 @@ as $$
       and (not p_profit_only or f.reduces_profit)
       and (
         not p_profit_only
-        or lower(btrim(coalesce(f.fee_name, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
+        or lower(btrim(coalesce(f.fee_name_original, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
       )
       and f.no_pesanan = any(coalesce(p_orders, '{}'::text[]))
     group by f.no_pesanan
@@ -534,7 +534,8 @@ as $$
       coalesce(nullif(p->>'dataStatus', ''), 'active') as data_status,
       coalesce(p->>'sync', '') as sync_mode,
       coalesce(p->>'loss', '') in ('1', 'true', 't') as want_loss,
-      coalesce(p->>'unpaid', '') in ('1', 'true', 't') as want_unpaid
+      coalesce(p->>'unpaid', '') in ('1', 'true', 't') as want_unpaid,
+      coalesce(p->>'excludeReturns', '') in ('1', 'true', 't') as exclude_returns
   ),
   base as (
     select
@@ -585,6 +586,14 @@ as $$
         b.q = ''
         or lower(concat_ws(' ', s.no_pesanan, s.sku, s.product_name, s.customer_name, s.store_name, s.city, s.channel)) like '%' || b.q || '%'
       )
+      and (
+        coalesce(jsonb_array_length(p->'skus'), 0) = 0
+        or s.sku in (select jsonb_array_elements_text(p->'skus'))
+      )
+      and (
+        not b.exclude_returns
+        or upper(btrim(coalesce(s.status, ''))) <> 'RETURNED'
+      )
   ),
   ids as (
     select coalesce(array_agg(distinct no_pesanan), '{}'::text[]) as ids from base
@@ -596,7 +605,7 @@ as $$
     select no_pesanan,
       coalesce(sum(amount_rp) filter (
         where reduces_profit
-          and lower(btrim(coalesce(fee_name, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
+          and lower(btrim(coalesce(fee_name_original, ''))) not in ('biaya iklan gmv max', 'voucher gmv max')
       ), 0) as fee,
       count(*) > 0 as has_fee
     from public.order_fees
@@ -630,18 +639,30 @@ as $$
       and no_pesanan in (select no_pesanan from base)
     group by no_pesanan
   ),
+  order_lines_all as (
+    select
+      s.no_pesanan,
+      s.line_revenue,
+      s.status,
+      case when c.unit_cost is null then 0 else round(c.unit_cost * 1.11) * s.line_qty end as hpp_amt
+    from public.v_order_lines_master s
+    left join lateral public.effective_product_cost(s.sku, s.order_day) c on true
+    cross join bounds b
+    where s.no_pesanan in (select no_pesanan from base)
+      and (b.data_status = 'all' or s.data_status = b.data_status)
+  ),
   order_profit as (
     select
-      pr.no_pesanan,
-      sum(pr.line_revenue) as net,
-      sum(pr.line_revenue) - sum(pr.hpp_amt) - coalesce(max(r.fee), 0) as profit,
+      a.no_pesanan,
+      sum(a.line_revenue) as net,
+      sum(a.line_revenue) - sum(a.hpp_amt) - coalesce(max(r.fee), 0) as profit,
       coalesce(bool_or(r.has_fee), false) as has_fee,
       bool_or(pay.no_pesanan is not null) as has_payment,
-      bool_or(coalesce(pr.status, '') in ('CANCELED', 'CANCELLED', 'CANCEL')) as cancelled
-    from priced pr
-    left join raw_fee r on r.no_pesanan = pr.no_pesanan
-    left join raw_pay pay on pay.no_pesanan = pr.no_pesanan
-    group by pr.no_pesanan
+      bool_or(coalesce(a.status, '') in ('CANCELED', 'CANCELLED', 'CANCEL')) as cancelled
+    from order_lines_all a
+    left join raw_fee r on r.no_pesanan = a.no_pesanan
+    left join raw_pay pay on pay.no_pesanan = a.no_pesanan
+    group by a.no_pesanan
   ),
   filtered as (
     select pr.*, op.profit as order_profit, op.has_fee as order_has_fee, op.has_payment as order_has_payment

@@ -381,6 +381,10 @@ export type OrderQuery = {
   unpaid?: boolean;
   /** `profit` lists the smallest order profit first. */
   sort?: "" | "profit";
+  /** Drop RETURNED lines. Master Pesanan leaves this off unless a dashboard link sets it. */
+  excludeReturns?: boolean;
+  /** Exact SKU match. Does not use the search box substring. */
+  skus?: string[];
   q: string;
   page: number;
   pageSize: number;

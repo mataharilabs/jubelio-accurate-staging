@@ -493,6 +493,8 @@ export class SupabaseStore implements DataStore {
       loss: Boolean(query.loss),
       unpaid: Boolean(query.unpaid),
       sort: query.sort === "profit" ? "profit" : "",
+      excludeReturns: query.excludeReturns ? "1" : "",
+      skus: query.skus ?? [],
     } });
     if (error) {
       const text = error.message ?? "";

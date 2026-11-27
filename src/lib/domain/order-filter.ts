@@ -17,6 +17,7 @@ export function matchesOrderFilter(input: { day: string; status: string; noPesan
   if (query.from && input.day < query.from) return false;
   if (query.to && input.day > query.to) return false;
   if (query.statuses?.length && !query.statuses.includes(input.status)) return false;
+  if (query.skus?.length && !query.skus.includes(input.sku)) return false;
   const q = query.q.trim().toLowerCase();
   if (!q) return true;
   return [input.noPesanan, input.sku, input.productName, input.customerName, input.storeName, input.city, input.channel].join(" ").toLowerCase().includes(q);

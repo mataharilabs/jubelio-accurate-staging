@@ -24,6 +24,7 @@ export type ProfitRow = {
   returnNet?: number;
   promo?: boolean;
   anomaly?: boolean;
+  sku?: string;
   children?: ProfitRow[];
 };
 
@@ -69,6 +70,10 @@ function pct(value: number | null, digits = 1): string {
 function rate(part: number, net: number): string {
   if (!net) return "—";
   return pct(part / net);
+}
+
+function shareOf(label: string, part: number, net: number) {
+  return <div className="mut">{label} {rate(part, net)}</div>;
 }
 
 function money(value: number) {
@@ -131,6 +136,7 @@ export function WaterfallTable({
   showReturns,
   expandable,
   marketingThroughByStore,
+  marketingThrough,
   periodTo,
 }: {
   title: string;
@@ -143,6 +149,8 @@ export function WaterfallTable({
   showReturns?: boolean;
   expandable?: boolean;
   marketingThroughByStore?: Record<string, string>;
+  /** Used for channel rows, which are not keyed by store. */
+  marketingThrough?: string | null;
   periodTo?: string;
 }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -196,7 +204,7 @@ export function WaterfallTable({
                 const before = prior.get(row.key);
                 const delta = change(row.profit, before?.profit);
                 const marginPts = before?.margin != null && row.margin != null ? (row.margin - before.margin) * 100 : null;
-                const through = marketingThroughByStore?.[row.key];
+                const through = marketingThroughByStore?.[row.key] ?? marketingThrough ?? undefined;
                 const shortAds = Boolean(through && periodTo && through < periodTo);
                 const provisional = (row.coverage != null && row.coverage < 0.999) || shortAds;
                 const cells = (
@@ -218,8 +226,8 @@ export function WaterfallTable({
                     <td className="n">{rp(row.net)}</td>
                     <td className="n">{rp(row.hpp)}</td>
                     {showUnits ? <td className="n">{row.hppUnit == null ? "—" : rp(row.hppUnit)}</td> : null}
-                    <td className="n">{rp(row.fee)}<div className="mut">{rate(row.fee, row.net)}</div></td>
-                    {withMarketing ? <td className="n">{rp(row.marketing)}<div className="mut">{rate(row.marketing, row.net)}</div></td> : null}
+                    <td className="n">{rp(row.fee)}{shareOf("Fee", row.fee, row.net)}</td>
+                    {withMarketing ? <td className="n">{rp(row.marketing)}{shareOf("Mkt", row.marketing, row.net)}</td> : null}
                     <td className="n">{money(row.contribution)}</td>
                     <td className="n">{money(row.profit)}</td>
                     <td className="n">{pct(row.margin)}</td>
@@ -235,7 +243,8 @@ export function WaterfallTable({
                     <td style={{ paddingLeft: 22 }}>{child.key || "—"}
                       {child.miss ? <div className="pill p-warn">HPP belum lengkap</div> : null}
                       {child.coverage != null && child.coverage < 0.999 ? <div className="pill p-warn">Biaya platform baru {pct(child.coverage, 0)} tercakup</div> : null}
-                      {(child.coverage != null && child.coverage < 0.999) ? <div className="pill p-gray">Sementara</div> : null}
+                      {shortAds ? <div className="pill p-warn">Marketing s/d {formatDay(through)}</div> : null}
+                      {(child.coverage != null && child.coverage < 0.999) || shortAds ? <div className="pill p-gray">Sementara</div> : null}
                     </td>
                     <td className="n">{numId(child.orders)}</td>
                     <td className="n">{numId(child.qty)}</td>
@@ -243,8 +252,8 @@ export function WaterfallTable({
                     <td className="n">{rp(child.net)}</td>
                     <td className="n">{rp(child.hpp)}</td>
                     {showUnits ? <td /> : null}
-                    <td className="n">{rp(child.fee)}<div className="mut">{rate(child.fee, child.net)}</div></td>
-                    {withMarketing ? <td className="n">{rp(child.marketing)}<div className="mut">{rate(child.marketing, child.net)}</div></td> : null}
+                    <td className="n">{rp(child.fee)}{shareOf("Fee", child.fee, child.net)}</td>
+                    {withMarketing ? <td className="n">{rp(child.marketing)}{shareOf("Mkt", child.marketing, child.net)}</td> : null}
                     <td className="n">{money(child.contribution)}</td>
                     <td className="n">{money(child.profit)}</td>
                     <td className="n">{pct(child.margin)}</td>

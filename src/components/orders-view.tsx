@@ -58,6 +58,8 @@ export function OrdersView() {
   const [loss, setLoss] = useState(false);
   const [unpaid, setUnpaid] = useState(false);
   const [sort, setSort] = useState<"" | "profit">("");
+  const [excludeReturns, setExcludeReturns] = useState(false);
+  const [skuFilter, setSkuFilter] = useState("");
   const [dataStatus, setDataStatus] = useState<"active" | "deleted" | "all">("active");
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [channelOptions, setChannelOptions] = useState<string[]>([]);
@@ -83,7 +85,7 @@ export function OrdersView() {
   const [error, setError] = useState<string | null>(null);
   const [salesPush, setSalesPush] = useState(false);
 
-  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort) {
+  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort, nextExclude = excludeReturns, nextSkus = skuFilter) {
     const params = new URLSearchParams({ q: nextQ, page: String(nextPage), dataStatus: nextData, limit: String(nextLimit) });
     if (nextFrom) params.set("from", nextFrom);
     if (nextTo) params.set("to", nextTo);
@@ -94,13 +96,15 @@ export function OrdersView() {
     if (nextLoss) params.set("loss", "1");
     if (nextUnpaid) params.set("unpaid", "1");
     if (nextSort === "profit") params.set("sort", "profit");
+    if (nextExclude) params.set("excludeReturns", "1");
+    if (nextSkus) params.set("skus", nextSkus);
     return params.toString();
   }
 
-  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort) {
+  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort, nextExclude = excludeReturns, nextSkus = skuFilter) {
     setLoading(true);
     try {
-      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid, nextSort)}`));
+      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus)}`));
     } finally {
       setLoading(false);
     }
@@ -134,6 +138,8 @@ export function OrdersView() {
     const nextLoss = params.get("loss") === "1" || params.get("loss") === "true";
     const nextUnpaid = params.get("unpaid") === "1" || params.get("unpaid") === "true";
     const nextSort: "" | "profit" = params.get("sort") === "profit" || (nextLoss && params.get("sort") !== "day") ? "profit" : "";
+    const nextExclude = params.get("excludeReturns") === "1" || params.get("excludeReturns") === "true";
+    const nextSkus = params.get("skus") ?? "";
     setFrom(nextFrom);
     setTo(nextTo);
     setStatus(nextStatus);
@@ -143,7 +149,9 @@ export function OrdersView() {
     setLoss(nextLoss);
     setUnpaid(nextUnpaid);
     setSort(nextSort);
-    load(0, nextFrom, nextTo, nextStatus, nextQ, "active", nextChannel, nextStore, "", pageSize, nextLoss, nextUnpaid, nextSort).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
+    setExcludeReturns(nextExclude);
+    setSkuFilter(nextSkus);
+    load(0, nextFrom, nextTo, nextStatus, nextQ, "active", nextChannel, nextStore, "", pageSize, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageReady, pageSize]);
 
@@ -218,6 +226,8 @@ export function OrdersView() {
       loss,
       unpaid,
       sort,
+      excludeReturns,
+      skus: skuFilter ? skuFilter.split(",").map((item) => item.trim()).filter(Boolean) : [],
       nos: picked.size ? [...picked] : undefined,
     }).then(() => { reportedOk("Ekspor selesai."); }).catch((err: Error) => setError(reported(err, "Ekspor gagal.")));
   }
@@ -354,7 +364,14 @@ export function OrdersView() {
           </select>
         </div>
       </div>
-      {loss || sort === "profit" ? <div className="note" style={{ marginBottom: 12 }}>Profit pesanan = revenue − HPP − biaya platform. Marketing tidak dipotong di sini. PPh dan biaya iklan GMV Max tidak mengurangi profit. Urutan dari profit terkecil bila kolom Profit pesanan aktif.</div> : null}
+      {excludeReturns || skuFilter ? (
+        <div className="note" style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {excludeReturns ? <button type="button" className="pill p-warn" onClick={() => { setExcludeReturns(false); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, sort, false, skuFilter).catch((err: Error) => setError(reported(err))); }}>Tanpa retur ×</button> : null}
+          {skuFilter ? <button type="button" className="pill p-gray" onClick={() => { setSkuFilter(""); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, sort, excludeReturns, "").catch((err: Error) => setError(reported(err))); }}>SKU: {skuFilter} ×</button> : null}
+          <span className="mut">Klik untuk melepas filter dari dashboard.</span>
+        </div>
+      ) : null}
+      {loss || sort === "profit" ? <div className="note" style={{ marginBottom: 12 }}>Profit pesanan = revenue − HPP − biaya platform dari seluruh baris pesanan, bukan hanya SKU yang tampil. Marketing tidak dipotong di sini. PPh dan biaya iklan GMV Max tidak mengurangi profit. Urutan dari profit terkecil bila kolom Profit pesanan aktif.</div> : null}
       <TableShell loading={loading}>
         <div className="tscroll">
           <table className="small cards">

@@ -80,27 +80,21 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     }
   }, [mode]);
 
-  const query = useMemo<DashboardQuery>(() => {
-    const known = options?.statuses ?? [];
-    const statuses = status
-      ? [status]
-      : known.filter((item) => !/cancel/i.test(item) && (includeReturns || !/return/i.test(item)));
-    return {
-      from,
-      to,
-      granularity: "day",
-      channels: channel ? [channel] : [],
-      stores: store ? [store] : [],
-      provinces: [],
-      cities: [],
-      statuses,
-      couriers: [],
-      skus: sku ? [sku] : [],
-      brands: brand ? [brand] : [],
-      categories: category ? [category] : [],
-      includeReturns,
-    };
-  }, [from, to, channel, store, status, sku, brand, category, options, includeReturns]);
+  const query = useMemo<DashboardQuery>(() => ({
+    from,
+    to,
+    granularity: "day",
+    channels: channel ? [channel] : [],
+    stores: store ? [store] : [],
+    provinces: [],
+    cities: [],
+    statuses: status ? [status] : [],
+    couriers: [],
+    skus: sku ? [sku] : [],
+    brands: brand ? [brand] : [],
+    categories: category ? [category] : [],
+    includeReturns,
+  }), [from, to, channel, store, status, sku, brand, category, includeReturns]);
 
   useEffect(() => {
     const compareWindow = previousEqualWindow(from, to);
@@ -158,15 +152,15 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
   const headline = A ? (mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) : 0;
   const priorHeadline = C ? (mode === "toko" ? C.net - C.hpp - C.fee - C.marketing : C.profit) : undefined;
 
-  function orderHref(extra: { loss?: boolean; unpaid?: boolean; channel?: string; store?: string; q?: string; sort?: "profit" }) {
+  function orderHref(extra: { loss?: boolean; unpaid?: boolean; channel?: string; store?: string; skus?: string; sort?: "profit" }) {
     const params = new URLSearchParams();
     if (from) params.set("from", from);
     if (to) params.set("to", to);
     if (extra.channel) params.set("channels", extra.channel);
     if (extra.store) params.set("stores", extra.store);
-    if (extra.q) params.set("q", extra.q);
+    if (extra.skus) params.set("skus", extra.skus);
     if (extra.sort) params.set("sort", extra.sort);
-    if (!includeReturns && !extra.q) params.set("statuses", query.statuses.join(","));
+    if (!includeReturns) params.set("excludeReturns", "1");
     if (extra.loss) params.set("loss", "1");
     if (extra.unpaid) params.set("unpaid", "1");
     return `/pesanan?${params.toString()}`;
@@ -233,6 +227,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     return {
       ...toProfit(row, row.sku),
       key: row.name ? `${row.sku} · ${row.name}` : row.sku,
+      sku: row.sku,
       promo: Math.abs(net) < 1 && hpp > 0,
       anomaly: qty > 0 && net > 0 && hpp / qty > net / qty,
       children: channelsBySku.get(row.sku),
@@ -302,7 +297,8 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
         </div>
         <div className="f"><label>Status pesanan</label>
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="">Tanpa batal{includeReturns ? "" : " & retur"}</option>
+            <option value="">Tanpa batal & retur</option>
+            {includeReturns ? <option value="RETURNED">RETURNED</option> : null}
             {(options?.statuses ?? ["PROCESSING", "SHIPPED", "COMPLETED"]).filter((item) => !/return|cancel/i.test(item)).map((item) => <option key={item}>{item}</option>)}
           </select>
         </div>
@@ -369,7 +365,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
                 href={(row) => orderHref({ loss: true, channel: row.channel, store: row.store, sort: "profit" })}
               />
               <WaterfallTable title="Penjualan per Toko" hint="urut dari profit bersih terendah · baris bisa dibuka per channel" rows={storeRows} compareRows={compare ? previousStores : undefined} loading={loading} withMarketing expandable marketingThroughByStore={report?.marketingThroughByStore} periodTo={to} />
-              <WaterfallTable title="Penjualan per Channel" rows={channelProfitRows} compareRows={compare ? previousChannels : undefined} loading={loading} withMarketing marketingThroughByStore={report?.marketingThroughByStore} periodTo={to} />
+              <WaterfallTable title="Penjualan per Channel" rows={channelProfitRows} compareRows={compare ? previousChannels : undefined} loading={loading} withMarketing marketingThrough={report?.marketingThrough} periodTo={to} />
               <MarketingBreakdown rows={report?.marketingLines ?? []} loading={loading} />
               <StoreMoneyList
                 title="Pesanan rugi"
@@ -393,8 +389,8 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             </>
           ) : (
             <>
-              <ProductLossList title="Produk rugi" hint="profit = revenue − HPP − biaya platform, paling negatif di atas · klik membuka pesanan SKU itu" rows={losingProducts} loading={loading} href={(row) => orderHref({ q: row.key.split(" · ")[0] ?? row.key, sort: "profit" })} empty="Tidak ada produk dengan profit di bawah nol." />
-              <ProductLossList title="Margin tipis (<10%)" hint="masih untung, margin di bawah 10%" rows={thinProducts} loading={loading} href={(row) => orderHref({ q: row.key.split(" · ")[0] ?? row.key, sort: "profit" })} empty="Tidak ada produk dengan margin di bawah 10%." />
+              <ProductLossList title="Produk rugi" hint="profit = revenue − HPP − biaya platform, paling negatif di atas · klik membuka pesanan SKU itu" rows={losingProducts} loading={loading} href={(row) => orderHref({ skus: row.sku || row.key, sort: "profit" })} empty="Tidak ada produk dengan profit di bawah nol." />
+              <ProductLossList title="Margin tipis (<10%)" hint="masih untung, margin di bawah 10%" rows={thinProducts} loading={loading} href={(row) => orderHref({ skus: row.sku || row.key, sort: "profit" })} empty="Tidak ada produk dengan margin di bawah 10%." />
               <TopProfit rows={report?.topProfit ?? []} loading={loading} />
               <div className="note mt">10 SKU teratas {(topShare(10) * 100).toFixed(1).replace(".", ",")}% revenue. 20 SKU teratas {(topShare(20) * 100).toFixed(1).replace(".", ",")}% revenue. {losingProducts.length} SKU rugi, total {rp(losingProducts.reduce((sum, row) => sum + row.profit, 0))}.</div>
               <WaterfallTable title="Penjualan per Produk" rows={productRows} compareRows={compare ? previousProducts : undefined} loading={loading} withMarketing={false} showUnits showReturns />
