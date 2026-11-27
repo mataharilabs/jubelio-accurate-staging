@@ -196,6 +196,7 @@ export class LocalStore implements DataStore {
         const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
         const hpp = version.lines.reduce((sum, line) => sum + (line.unitCogs == null ? 0 : Math.round(line.unitCogs * 1.11) * line.qty), 0);
         if (query.excludeReturns && version.status.toUpperCase() === "RETURNED") return false;
+        if (query.excludeCancelled && isCancelledStatus(version.status)) return false;
         if (query.loss && (net - hpp >= 0 || isCancelledStatus(version.status))) return false;
         if (query.unpaid && (isCancelledStatus(version.status) || net === 0)) return false;
         return true;

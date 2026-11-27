@@ -21,6 +21,7 @@ export async function GET(request: Request) {
       unpaid: url.searchParams.get("unpaid") === "1" || url.searchParams.get("unpaid") === "true",
       sort: url.searchParams.get("sort") === "profit" ? "profit" : "",
       excludeReturns: url.searchParams.get("excludeReturns") === "1" || url.searchParams.get("excludeReturns") === "true",
+      excludeCancelled: url.searchParams.get("excludeCancelled") === "1" || url.searchParams.get("excludeCancelled") === "true",
       skus: (url.searchParams.get("skus") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
       q: url.searchParams.get("q") ?? "",
       page: Number.isFinite(page) ? page : 0,

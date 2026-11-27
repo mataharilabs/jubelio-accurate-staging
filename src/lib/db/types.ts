@@ -383,6 +383,8 @@ export type OrderQuery = {
   sort?: "" | "profit";
   /** Drop RETURNED lines. Master Pesanan leaves this off unless a dashboard link sets it. */
   excludeReturns?: boolean;
+  /** Drop cancelled lines. Used by the thin-margin links. */
+  excludeCancelled?: boolean;
   /** Exact SKU match. Does not use the search box substring. */
   skus?: string[];
   q: string;

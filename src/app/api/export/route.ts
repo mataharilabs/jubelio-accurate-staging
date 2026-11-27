@@ -17,7 +17,7 @@ import { AppError } from "@/lib/errors";
 import { fail, requirePermission } from "@/lib/http";
 import type { Permission } from "@/lib/auth/permissions";
 
-async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string; dataStatus?: "active" | "deleted" | "all"; channels?: string[]; stores?: string[]; sync?: "" | "need" | "done"; loss?: boolean; unpaid?: boolean; sort?: "" | "profit"; excludeReturns?: boolean; skus?: string[] }): Promise<OrderPageRow[]> {
+async function allOrderRows(store: Awaited<ReturnType<typeof getStore>>, query: { day: string | null; from?: string | null; to?: string | null; statuses?: string[]; q: string; dataStatus?: "active" | "deleted" | "all"; channels?: string[]; stores?: string[]; sync?: "" | "need" | "done"; loss?: boolean; unpaid?: boolean; sort?: "" | "profit"; excludeReturns?: boolean; excludeCancelled?: boolean; skus?: string[] }): Promise<OrderPageRow[]> {
   const rows: OrderPageRow[] = [];
   let page = 0;
   for (;;) {
@@ -49,6 +49,7 @@ export async function POST(request: Request) {
       unpaid?: boolean;
       sort?: "" | "profit";
       excludeReturns?: boolean;
+      excludeCancelled?: boolean;
       skus?: string[];
       nos?: string[];
       allowLargePdf?: boolean;
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
         unpaid: body.unpaid,
         sort: body.sort === "profit" ? "profit" : "",
         excludeReturns: Boolean(body.excludeReturns),
+        excludeCancelled: Boolean(body.excludeCancelled),
         skus: body.skus ?? [],
       });
       if (body.nos?.length) {

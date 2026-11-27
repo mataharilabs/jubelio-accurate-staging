@@ -272,9 +272,10 @@ export function applyMarketingAllocation(
       targetFee: 0,
     };
     line.spend += visibleSpend;
-    if (row.adsRevenue != null && visibleSpend && amount) {
+    const basis = round2(amount);
+    if (row.adsRevenue != null && visibleSpend && basis) {
       line.hasAds = true;
-      line.adsRevenue = (line.adsRevenue ?? 0) + row.adsRevenue * factor * (visibleSpend / amount);
+      line.adsRevenue = (line.adsRevenue ?? 0) + row.adsRevenue * factor * (visibleSpend / basis);
     }
     if (placed.length) {
       line.channels = placed;

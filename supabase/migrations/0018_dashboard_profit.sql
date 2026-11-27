@@ -535,7 +535,8 @@ as $$
       coalesce(p->>'sync', '') as sync_mode,
       coalesce(p->>'loss', '') in ('1', 'true', 't') as want_loss,
       coalesce(p->>'unpaid', '') in ('1', 'true', 't') as want_unpaid,
-      coalesce(p->>'excludeReturns', '') in ('1', 'true', 't') as exclude_returns
+      coalesce(p->>'excludeReturns', '') in ('1', 'true', 't') as exclude_returns,
+      coalesce(p->>'excludeCancelled', '') in ('1', 'true', 't') as exclude_cancelled
   ),
   base as (
     select
@@ -593,6 +594,13 @@ as $$
       and (
         not b.exclude_returns
         or upper(btrim(coalesce(s.status, ''))) <> 'RETURNED'
+      )
+      and (
+        not b.exclude_cancelled
+        or not (
+          upper(btrim(coalesce(s.status, ''))) in ('CANCELED', 'CANCELLED', 'CANCEL')
+          or upper(btrim(coalesce(s.status, ''))) like 'CANCEL%'
+        )
       )
   ),
   ids as (
