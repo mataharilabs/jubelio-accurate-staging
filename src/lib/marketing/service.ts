@@ -163,10 +163,17 @@ export async function listSpendStores(): Promise<string[]> {
   }
 }
 
-export async function listActiveSlices(): Promise<{ storeName: string; periodStart: string; periodEnd: string; spend: number }[]> {
+export async function listActiveSlices(): Promise<{ storeName: string; platform: string; periodStart: string; periodEnd: string; spend: number; adsRevenue: number | null }[]> {
   try {
     const rows = await loadRows("active");
-    return rows.map((row) => ({ storeName: row.storeName, periodStart: row.periodStart, periodEnd: row.periodEnd, spend: row.spend }));
+    return rows.map((row) => ({
+      storeName: row.storeName,
+      platform: row.platform,
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd,
+      spend: row.spend,
+      adsRevenue: row.adsRevenue,
+    }));
   } catch (error) {
     if (error instanceof AppError && /0013_marketing_spend|0014_marketing_apply/.test(error.message)) return [];
     throw error;

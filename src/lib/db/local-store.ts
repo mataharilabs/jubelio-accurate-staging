@@ -194,7 +194,10 @@ export class LocalStore implements DataStore {
         const want = query.dataStatus ?? "active";
         if (!(want === "all" || status === want)) return false;
         const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
-        if (query.loss && (net >= 0 || isCancelledStatus(version.status))) return false;
+        const hpp = version.lines.reduce((sum, line) => sum + (line.unitCogs == null ? 0 : Math.round(line.unitCogs * 1.11) * line.qty), 0);
+        if (query.excludeReturns && version.status.toUpperCase() === "RETURNED") return false;
+        if (query.excludeCancelled && isCancelledStatus(version.status)) return false;
+        if (query.loss && (net - hpp >= 0 || isCancelledStatus(version.status))) return false;
         if (query.unpaid && (isCancelledStatus(version.status) || net === 0)) return false;
         return true;
       })
@@ -216,6 +219,14 @@ export class LocalStore implements DataStore {
         contentUpdatedAt: version.contentUpdatedAt ?? version.createdAt,
         syncedAt: this.db.syncStates.find((item) => item.noPesanan === version.noPesanan)?.syncedAt ?? null,
       }, query));
+    const profitOf = new Map(this.db.versions.map((version) => {
+      const net = version.lines.reduce((sum, line) => sum + (line.revenuePerUnit ?? 0) * line.qty, 0);
+      const hpp = version.lines.reduce((sum, line) => sum + (line.unitCogs == null ? 0 : Math.round(line.unitCogs * 1.11) * line.qty), 0);
+      return [version.noPesanan, net - hpp] as const;
+    }));
+    if (query.sort === "profit") {
+      rows.sort((a, b) => (profitOf.get(a.version.noPesanan) ?? 0) - (profitOf.get(b.version.noPesanan) ?? 0) || b.version.day.localeCompare(a.version.day) || a.version.noPesanan.localeCompare(b.version.noPesanan));
+    }
     const pageSize = query.pageSize || 25;
     const pages = Math.max(1, Math.ceil(rows.length / pageSize));
     const page = Math.min(query.page, pages - 1);
@@ -242,6 +253,7 @@ export class LocalStore implements DataStore {
         totalDiskon: version.totalDiskon,
         unitDiskon: line.unitDiskon,
         revenuePerUnit: line.revenuePerUnit,
+        orderProfit: profitOf.get(version.noPesanan) ?? 0,
         customerName: version.customerName,
         customerCode: version.customerCode,
         province: version.province,

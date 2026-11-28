@@ -335,6 +335,7 @@ export class SupabaseStore implements DataStore {
         skus: query.skus,
         brands: query.brands ?? [],
         categories: query.categories ?? [],
+        includeReturns: Boolean(query.includeReturns),
       },
     }), "menghitung dasbor");
     const raw = data as DashboardReport;
@@ -355,6 +356,11 @@ export class SupabaseStore implements DataStore {
         profit: Number(raw.kpis.profit ?? raw.kpis.net ?? 0),
         missingSkus: Number(raw.kpis.missingSkus ?? 0),
         missingSkuSample: Array.isArray(raw.kpis.missingSkuSample) ? raw.kpis.missingSkuSample.map(String) : [],
+        returnsOrders: raw.kpis.returnsOrders == null ? undefined : Number(raw.kpis.returnsOrders),
+        returnsNet: raw.kpis.returnsNet == null ? undefined : Number(raw.kpis.returnsNet),
+        returnsQty: raw.kpis.returnsQty == null ? undefined : Number(raw.kpis.returnsQty),
+        mpNet: raw.kpis.mpNet == null ? undefined : Number(raw.kpis.mpNet),
+        mpCovered: raw.kpis.mpCovered == null ? undefined : Number(raw.kpis.mpCovered),
       },
       trend: (raw.trend ?? []).map((row) => ({
         ...row,
@@ -418,6 +424,39 @@ export class SupabaseStore implements DataStore {
         profit: Number(row.profit ?? 0),
         miss: Boolean(row.miss),
       })),
+      matrix: (raw.matrix ?? []).map((row) => ({
+        store: String(row.store ?? ""),
+        channel: String(row.channel ?? ""),
+        gross: Number(row.gross ?? 0),
+        net: Number(row.net ?? 0),
+        hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
+        qty: Number(row.qty ?? 0),
+        orders: Number(row.orders ?? 0),
+        profit: Number(row.profit ?? 0),
+        mpNet: Number(row.mpNet ?? 0),
+        mpCovered: Number(row.mpCovered ?? 0),
+        miss: Boolean(row.miss),
+      })),
+      allocBase: (raw.allocBase ?? []).map((row) => ({
+        store: String(row.store ?? ""),
+        channel: String(row.channel ?? ""),
+        net: Number(row.net ?? 0),
+        hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
+      })),
+      productChannels: (raw.productChannels ?? []).map((row) => ({
+        sku: String(row.sku ?? ""),
+        name: String(row.name ?? ""),
+        channel: String(row.channel ?? ""),
+        qty: Number(row.qty ?? 0),
+        net: Number(row.net ?? 0),
+        hpp: Number(row.hpp ?? 0),
+        fee: Number(row.fee ?? 0),
+        profit: Number(row.profit ?? 0),
+        orders: Number(row.orders ?? 0),
+        miss: Boolean(row.miss),
+      })),
     };
     return attachMarketing(report, query);
   }
@@ -453,6 +492,10 @@ export class SupabaseStore implements DataStore {
       sync: query.sync ?? "",
       loss: Boolean(query.loss),
       unpaid: Boolean(query.unpaid),
+      sort: query.sort === "profit" ? "profit" : "",
+      excludeReturns: query.excludeReturns ? "1" : "",
+      excludeCancelled: query.excludeCancelled ? "1" : "",
+      skus: query.skus ?? [],
     } });
     if (error) {
       const text = error.message ?? "";
@@ -1243,7 +1286,7 @@ export class SupabaseStore implements DataStore {
   }
 }
 
-function numberGroup<T extends { gross: number; net: number; qty: number; orders: number; hpp?: number; fee?: number; profit?: number }>(row: T): T {
+function numberGroup<T extends { gross: number; net: number; qty: number; orders: number; hpp?: number; fee?: number; profit?: number; mpNet?: number; mpCovered?: number; returnQty?: number; returnNet?: number; returnOrders?: number }>(row: T): T {
   return {
     ...row,
     gross: Number(row.gross),
@@ -1253,6 +1296,11 @@ function numberGroup<T extends { gross: number; net: number; qty: number; orders
     hpp: Number(row.hpp ?? 0),
     fee: Number(row.fee ?? 0),
     profit: Number(row.profit ?? row.net ?? 0),
+    mpNet: row.mpNet == null ? undefined : Number(row.mpNet),
+    mpCovered: row.mpCovered == null ? undefined : Number(row.mpCovered),
+    returnQty: row.returnQty == null ? undefined : Number(row.returnQty),
+    returnNet: row.returnNet == null ? undefined : Number(row.returnNet),
+    returnOrders: row.returnOrders == null ? undefined : Number(row.returnOrders),
   };
 }
 

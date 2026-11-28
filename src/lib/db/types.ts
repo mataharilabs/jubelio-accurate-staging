@@ -233,17 +233,96 @@ export type DashboardQuery = {
   skus: string[];
   brands?: string[];
   categories?: string[];
+  /** When false (default), Dashboard Toko and Dashboard Produk leave RETURNED orders out of the totals. */
+  includeReturns?: boolean;
 };
 
-export type GroupRow = { key: string; gross: number; net: number; qty: number; orders: number; hpp?: number; fee?: number; profit?: number; marketing?: number; brand?: string; category?: string; name?: string; miss?: boolean };
+export type GroupRow = {
+  key: string;
+  gross: number;
+  net: number;
+  qty: number;
+  orders: number;
+  hpp?: number;
+  fee?: number;
+  profit?: number;
+  marketing?: number;
+  brand?: string;
+  category?: string;
+  name?: string;
+  miss?: boolean;
+  mpNet?: number;
+  mpCovered?: number;
+  returnQty?: number;
+  returnNet?: number;
+  returnOrders?: number;
+};
 export type ProductRow = GroupRow & { sku: string; name: string; share: number };
+export type MatrixRow = {
+  store: string;
+  channel: string;
+  gross: number;
+  net: number;
+  hpp: number;
+  fee: number;
+  qty: number;
+  orders: number;
+  profit: number;
+  marketing?: number;
+  mpNet: number;
+  mpCovered: number;
+  miss?: boolean;
+};
+export type AllocBaseRow = { store: string; channel: string; net: number; hpp?: number; fee?: number };
+export type ProductChannelRow = {
+  sku: string;
+  name: string;
+  channel: string;
+  qty: number;
+  net: number;
+  hpp: number;
+  fee: number;
+  profit: number;
+  orders: number;
+  miss?: boolean;
+};
 export type GeoRow = { key: string; net: number; orders: number; qty: number; share: number; gross?: number; hpp?: number; fee?: number; profit?: number };
 
 export type StoreLossRow = { channel: string; storeName: string; orders: number; loss: number };
 export type StoreUnpaidRow = { channel: string; storeName: string; orders: number; net: number };
 
+export type MarketingLineRow = {
+  store: string;
+  platform: string;
+  spend: number;
+  adsRevenue: number | null;
+  channels: string[];
+  targetNet: number;
+  targetHpp: number;
+  targetFee: number;
+};
+
 export type DashboardReport = {
-  kpis: { gross: number; disc: number; net: number; orders: number; qty: number; aov: number; days: number; hpp: number; fee: number; marketing: number; profit: number; missingSkus: number; missingSkuSample?: string[] };
+  kpis: {
+    gross: number;
+    disc: number;
+    net: number;
+    orders: number;
+    qty: number;
+    aov: number;
+    days: number;
+    hpp: number;
+    fee: number;
+    marketing: number;
+    profit: number;
+    missingSkus: number;
+    missingSkuSample?: string[];
+    returnsOrders?: number;
+    returnsNet?: number;
+    returnsQty?: number;
+    mpNet?: number;
+    mpCovered?: number;
+  };
   trend: { bucket: string; label: string; gross: number; net: number; orders: number; hpp?: number; fee?: number; profit?: number; marketing?: number }[];
   channels: GroupRow[];
   stores: GroupRow[];
@@ -255,6 +334,13 @@ export type DashboardReport = {
   lossStores?: StoreLossRow[];
   unpaidStores?: StoreUnpaidRow[];
   topProfit?: { sku: string; name: string; qty: number; net: number; profit: number; miss?: boolean }[];
+  matrix?: MatrixRow[];
+  allocBase?: AllocBaseRow[];
+  productChannels?: ProductChannelRow[];
+  marketingLines?: MarketingLineRow[];
+  /** Latest marketing period end that overlaps this window. */
+  marketingThrough?: string | null;
+  marketingThroughByStore?: Record<string, string>;
 };
 
 export type FilterOptions = {
@@ -293,6 +379,14 @@ export type OrderQuery = {
   sync?: "" | "need" | "done";
   loss?: boolean;
   unpaid?: boolean;
+  /** `profit` lists the smallest order profit first. */
+  sort?: "" | "profit";
+  /** Drop RETURNED lines. Master Pesanan leaves this off unless a dashboard link sets it. */
+  excludeReturns?: boolean;
+  /** Drop cancelled lines. Used by the thin-margin links. */
+  excludeCancelled?: boolean;
+  /** Exact SKU match. Does not use the search box substring. */
+  skus?: string[];
   q: string;
   page: number;
   pageSize: number;

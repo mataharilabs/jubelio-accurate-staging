@@ -3,6 +3,14 @@ import { cell, findHeader, sheetMatrix, textCell } from "@/lib/fees/sheets";
 import { SETTLEMENT_MARKER, reducesProfit, type FeeDraft, type FeeGroup, type ParsedFees } from "@/lib/fees/types";
 import type * as XLSX from "xlsx";
 
+/** Settlement ad costs already counted from the marketing upload. Recorded, not subtracted. */
+const GMV_AD_COSTS = new Set(["Biaya iklan GMV Max", "Voucher GMV Max"]);
+
+export function tiktokFeeReducesProfit(name: string, group: FeeGroup): boolean {
+  if (GMV_AD_COSTS.has(name)) return false;
+  return reducesProfit(group);
+}
+
 /** Ongkir is the net seller shipping and already includes Biaya layanan logistik on almost every order. */
 const COLUMNS: { name: string; group: FeeGroup }[] = [
   { name: "Biaya komisi platform", group: "Komisi" },
@@ -80,7 +88,7 @@ export function parseTiktok(book: XLSX.WorkBook): ParsedFees {
         amountRp: amount,
         pct: null,
         base: null,
-        reducesProfit: reducesProfit(column.group),
+        reducesProfit: tiktokFeeReducesProfit(column.name, column.group),
         allocated: false,
         marketplace: "tiktok",
       });

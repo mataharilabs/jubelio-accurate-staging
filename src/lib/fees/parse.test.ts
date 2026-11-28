@@ -60,6 +60,20 @@ describe("marketplace fee parsers", () => {
     expect(order.find((row) => row.feeName === "Commission")?.pct).toBeCloseTo(7.7, 1);
   });
 
+  it("records TikTok GMV Max ad costs without treating them as a platform fee", () => {
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["ID Pesanan/Penyesuaian", "Jenis transaksi", "Ongkir", "Biaya komisi platform", "Biaya iklan GMV Max", "Voucher GMV Max", "PPh Pasal 22 dipungut"],
+      ["T-1", "Pesanan", 0, -1000, -5000, -200, -50],
+    ]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Detail pesanan");
+    const parsed = parseFeeWorkbook(workbook);
+    expect(parsed.rows.find((row) => row.feeName === "Biaya iklan GMV Max")).toMatchObject({ amountRp: 5000, reducesProfit: false, feeGroup: "Lain-lain" });
+    expect(parsed.rows.find((row) => row.feeName === "Voucher GMV Max")).toMatchObject({ amountRp: 200, reducesProfit: false });
+    expect(parsed.rows.find((row) => row.feeName === "Biaya komisi platform")).toMatchObject({ amountRp: 1000, reducesProfit: true });
+    expect(parsed.rows.find((row) => row.feeName === "PPh Pasal 22 dipungut")?.reducesProfit).toBe(false);
+  });
+
   it("parses TikTok and Tokopedia order rows, using Ongkir once and keeping zero-fee settlements", () => {
     const parsed = parseFeeWorkbook(book("tiktok-settlement.xlsx"));
     expect(parsed.marketplace).toBe("tiktok");

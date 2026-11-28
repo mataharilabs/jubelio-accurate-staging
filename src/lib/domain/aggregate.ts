@@ -101,8 +101,15 @@ export function flattenCurrent(versions: OrderVersion[], names?: ReadonlyMap<str
   return rows;
 }
 
+function isCancelledStatus(status: string): boolean {
+  const value = status.trim().toUpperCase();
+  return value === "CANCELED" || value === "CANCELLED" || value === "CANCEL" || value.startsWith("CANCEL");
+}
+
 export function filterFlat(rows: Flat[], query: DashboardQuery): Flat[] {
   return rows.filter((row) => {
+    if (isCancelledStatus(row.status)) return false;
+    if (!query.includeReturns && row.status.trim().toUpperCase() === "RETURNED") return false;
     if (query.from && row.day < query.from) return false;
     if (query.to && row.day > query.to) return false;
     if (!selected(query.channels, row.channel)) return false;
@@ -207,5 +214,11 @@ export function aggregate(rows: Flat[], query: DashboardQuery): DashboardReport 
 }
 
 export function reportOf(versions: OrderVersion[], query: DashboardQuery, names?: ReadonlyMap<string, string>): DashboardReport {
-  return aggregate(filterFlat(flattenCurrent(versions, names), query), query);
+  const matched = filterFlat(flattenCurrent(versions, names), { ...query, includeReturns: true });
+  const returned = matched.filter((row) => row.status.trim().toUpperCase() === "RETURNED");
+  const rows = query.includeReturns ? matched : matched.filter((row) => row.status.trim().toUpperCase() !== "RETURNED");
+  const report = aggregate(rows, query);
+  report.kpis.returnsOrders = new Set(returned.map((row) => row.no)).size;
+  report.kpis.returnsNet = returned.reduce((sum, row) => sum + row.net, 0);
+  return report;
 }

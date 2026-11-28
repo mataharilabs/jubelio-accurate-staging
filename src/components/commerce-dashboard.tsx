@@ -3,24 +3,25 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { BarChart, CHART_PAL, Donut } from "@/components/charts";
+import { CompletenessBanner, LossRank, MarketingBreakdown, ProductLossList, WaterfallTable, asReady, type LossRankRow, type ProfitRow } from "@/components/dashboard-profit";
 import { downloadExport } from "@/components/download";
 import { ActionButton, reported, reportedOk, Spinner, TableShell } from "@/components/ui/feedback";
 import { Pager, useClientPage } from "@/components/ui/pager";
 import { api } from "@/lib/api-client";
-import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow } from "@/lib/db/types";
+import type { DashboardQuery, DashboardReport, FilterOptions, GroupRow, MatrixRow } from "@/lib/db/types";
 import { dayShort } from "@/lib/domain/aggregate";
-import { storeProfit } from "@/lib/marketing/allocate";
+import { feeCoverageRatio, storeProfit } from "@/lib/marketing/allocate";
 import { currentMonthRange, lastNDays, previousEqualWindow, previousMonthRange } from "@/lib/domain/phase3";
 import { numId, rp, rpCompact } from "@/lib/format";
 
 type Mode = "toko" | "produk";
 type Metric = "net" | "gross" | "profit";
-type Preset = "month" | "prev" | "d7" | "d30" | "custom";
+type Preset = "month" | "prev" | "oct2026" | "d7" | "d30" | "custom";
 
 const METRIC_LABEL: Record<Metric, string> = {
   net: "Revenue Bersih",
   gross: "Penjualan Kotor",
-  profit: "Profit",
+  profit: "Profit bersih",
 };
 
 function trendValue(row: { gross?: number; net?: number; profit?: number; marketing?: number; hpp?: number; fee?: number } | undefined, metric: Metric, storeMode: boolean): number {
@@ -47,8 +48,10 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
   const initial = currentMonthRange();
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
-  const [compare, setCompare] = useState(false);
-  const [metric, setMetric] = useState<Metric>("net");
+  const [compare, setCompare] = useState(true);
+  const [metric, setMetric] = useState<Metric>("profit");
+  const [includeReturns, setIncludeReturns] = useState(false);
+  const [optionsReady, setOptionsReady] = useState(false);
   const [store, setStore] = useState("");
   const [channel, setChannel] = useState("");
   const [status, setStatus] = useState("");
@@ -65,7 +68,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     api<{ reports: { report: DashboardReport }[]; options: FilterOptions }>("/api/dashboard", {
       method: "POST",
       body: JSON.stringify({ query: { ...currentMonthRange(), granularity: "day" }, includeOptions: true }),
-    }).then((result) => setOptions(result.options)).catch((err: Error) => setError(err.message));
+    }).then((result) => setOptions(result.options)).catch((err: Error) => setError(err.message)).finally(() => setOptionsReady(true));
     if (mode === "produk") {
       Promise.all([
         api<{ id: string; name: string }[]>("/api/catalog/merek"),
@@ -85,20 +88,20 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     stores: store ? [store] : [],
     provinces: [],
     cities: [],
-    statuses: status === "xrc"
-      ? ((options?.statuses ?? ["PROCESSING", "SHIPPED", "COMPLETED"]).filter((item) => !/return|cancel/i.test(item)))
-      : status ? [status] : [],
+    statuses: status ? [status] : [],
     couriers: [],
     skus: sku ? [sku] : [],
     brands: brand ? [brand] : [],
     categories: category ? [category] : [],
-  }), [from, to, channel, store, status, sku, brand, category, options]);
+    includeReturns,
+  }), [from, to, channel, store, status, sku, brand, category, includeReturns]);
 
   useEffect(() => {
     const compareWindow = previousEqualWindow(from, to);
     const periods = compare
       ? [{ label: "Periode", from, to }, { label: "Pembanding", from: compareWindow.from, to: compareWindow.to }]
       : [{ label: "Periode", from, to }];
+    if (!optionsReady) return;
     let cancel = false;
     setLoading(true);
     api<{ reports: { report: DashboardReport }[] }>("/api/dashboard", {
@@ -111,16 +114,17 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
       setError(null);
     }).catch((err: Error) => { if (!cancel) setError(reported(err, "Gagal memuat dashboard.")); }).finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [query, compare, from, to, status]);
+  }, [query, compare, from, to, status, optionsReady]);
 
   function applyPreset(next: Preset) {
     setPreset(next);
     const today = currentMonthRange().to;
     const range = next === "month" ? currentMonthRange(today)
       : next === "prev" ? previousMonthRange(today)
-        : next === "d7" ? lastNDays(7, today)
-          : next === "d30" ? lastNDays(30, today)
-            : null;
+        : next === "oct2026" ? { from: "2026-10-01", to: "2026-10-31" }
+          : next === "d7" ? lastNDays(7, today)
+            : next === "d30" ? lastNDays(30, today)
+              : null;
     if (range) {
       setFrom(range.from);
       setTo(range.to);
@@ -132,8 +136,9 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
     setPreset("month");
     setFrom(range.from);
     setTo(range.to);
-    setCompare(false);
-    setMetric("net");
+    setCompare(true);
+    setMetric("profit");
+    setIncludeReturns(false);
     setStore("");
     setChannel("");
     setStatus("");
@@ -144,26 +149,117 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
 
   const A = report?.kpis;
   const C = previous?.kpis;
-  const profitLabel = mode === "toko" ? "Profit Toko" : "Profit Produk";
+  const headline = A ? (mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) : 0;
+  const priorHeadline = C ? (mode === "toko" ? C.net - C.hpp - C.fee - C.marketing : C.profit) : undefined;
 
-  function orderHref(extra: { loss?: boolean; unpaid?: boolean; channel: string; store: string }) {
+  function orderHref(extra: { loss?: boolean; unpaid?: boolean; channel?: string; store?: string; skus?: string; sort?: "profit"; excludeCancelled?: boolean }) {
     const params = new URLSearchParams();
     if (from) params.set("from", from);
     if (to) params.set("to", to);
     if (extra.channel) params.set("channels", extra.channel);
     if (extra.store) params.set("stores", extra.store);
+    if (extra.skus) params.set("skus", extra.skus);
+    if (extra.sort) params.set("sort", extra.sort);
     if (query.statuses.length) params.set("statuses", query.statuses.join(","));
+    if (!includeReturns) params.set("excludeReturns", "1");
+    if (extra.excludeCancelled) params.set("excludeCancelled", "1");
     if (extra.loss) params.set("loss", "1");
     if (extra.unpaid) params.set("unpaid", "1");
     return `/pesanan?${params.toString()}`;
   }
+
+  function toProfit(row: GroupRow, key = row.key): ProfitRow {
+    return {
+      key,
+      orders: row.orders,
+      qty: row.qty,
+      net: row.net ?? 0,
+      gross: row.gross ?? 0,
+      hpp: row.hpp,
+      fee: row.fee,
+      marketing: row.marketing,
+      miss: row.miss,
+      mpNet: row.mpNet,
+      mpCovered: row.mpCovered,
+      returnQty: row.returnQty,
+      returnNet: row.returnNet,
+    };
+  }
+
+  function cellProfit(row: MatrixRow): ProfitRow {
+    return {
+      key: row.channel,
+      orders: row.orders,
+      qty: row.qty,
+      net: row.net,
+      gross: row.gross ?? 0,
+      hpp: row.hpp,
+      fee: row.fee,
+      marketing: row.marketing,
+      miss: row.miss,
+      mpNet: row.mpNet,
+      mpCovered: row.mpCovered,
+    };
+  }
+
+  const storeProfitRows = (report?.stores ?? []).map((row) => toProfit(row));
+  const channelProfitRows = (report?.channels ?? []).map((row) => ({
+    ...toProfit(row),
+    profit: mode === "toko" ? storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) : row.profit,
+  }));
+  const previousStores = (previous?.stores ?? []).map((row) => toProfit(row));
+  const previousChannels = (previous?.channels ?? []).map((row) => toProfit(row));
+  const matrixByStore = new Map<string, ProfitRow[]>();
+  for (const row of report?.matrix ?? []) {
+    const list = matrixByStore.get(row.store) ?? [];
+    list.push(cellProfit(row));
+    matrixByStore.set(row.store, list);
+  }
+  const storeRows: ProfitRow[] = storeProfitRows.map((row) => ({ ...row, children: matrixByStore.get(row.key) ?? [] }));
+  const channelsBySku = new Map<string, ProfitRow[]>();
+  for (const row of report?.productChannels ?? []) {
+    const list = channelsBySku.get(row.sku) ?? [];
+    list.push({ key: row.channel, orders: row.orders, qty: row.qty, net: row.net, hpp: row.hpp, fee: row.fee, miss: row.miss });
+    channelsBySku.set(row.sku, list);
+  }
+  const productRows: ProfitRow[] = (report?.products ?? []).map((row) => {
+    const net = row.net ?? 0;
+    const hpp = row.hpp ?? 0;
+    const qty = row.qty || 0;
+    return {
+      ...toProfit(row, row.sku),
+      key: row.name ? `${row.sku} · ${row.name}` : row.sku,
+      sku: row.sku,
+      promo: Math.abs(net) < 1 && hpp > 0,
+      anomaly: qty > 0 && net > 0 && hpp / qty > net / qty,
+      children: channelsBySku.get(row.sku),
+    };
+  });
+  const previousProducts = (previous?.products ?? []).map((row) => toProfit(row, row.name ? `${row.sku} · ${row.name}` : row.sku));
+  const lossRank: LossRankRow[] = [
+    ...storeProfitRows.map((row) => {
+      const profit = storeProfit(row.net, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0);
+      const coverage = row.mpNet == null ? null : feeCoverageRatio(row.mpNet, row.mpCovered ?? 0);
+      return { id: `store:${row.key}`, store: row.key, channel: "", profit, margin: row.net ? profit / row.net : null, orders: row.orders, net: row.net, provisional: coverage != null && coverage < 0.999 };
+    }),
+    ...(report?.matrix ?? []).map((row) => {
+      const profit = storeProfit(row.net, row.hpp, row.fee, row.marketing ?? 0);
+      const coverage = feeCoverageRatio(row.mpNet, row.mpCovered);
+      return { id: `cell:${row.store}:${row.channel}`, store: row.store, channel: row.channel, profit, margin: row.net ? profit / row.net : null, orders: row.orders, net: row.net, provisional: coverage != null && coverage < 0.999 };
+    }),
+  ].filter((row) => row.profit < 0).sort((a, b) => a.profit - b.profit);
+  const losingProducts = productRows.map((row) => asReady({ ...row, key: row.key })).filter((row) => row.profit < 0).sort((a, b) => a.profit - b.profit);
+  const netRank = [...productRows].sort((a, b) => b.net - a.net);
+  const netSum = netRank.reduce((sum, row) => sum + row.net, 0);
+  const topShare = (count: number) => netSum ? netRank.slice(0, count).reduce((sum, row) => sum + row.net, 0) / netSum : 0;
+  const thinProducts = productRows.map((row) => asReady(row)).filter((row) => row.profit >= 0 && row.margin != null && row.margin < 0.1 && row.net > 0).sort((a, b) => (a.margin ?? 0) - (b.margin ?? 0));
 
   return (
     <div>
       {error ? <div className="warnbox">{error}</div> : null}
       <div className="pagehead">
         <div className="desc">
-          <b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : " (Marketing = 0)"}. Default periode: <b>bulan berjalan</b>. Pesanan berstatus data <b>Dihapus</b> tidak dihitung.
+          <b>Profit bersih</b> = Revenue − HPP − Biaya platform{mode === "toko" ? " − Marketing" : ""}. <b>Kontribusi sebelum HPP</b> = Revenue − Biaya platform{mode === "toko" ? " − Marketing" : ""}. Batal tidak dihitung. Retur tampil terpisah dan {includeReturns ? "sedang ikut di angka" : "tidak masuk angka utama"}.
         </div>
         <div className="actions">
           <ActionButton className="btn" onClick={() => downloadExport(mode === "toko" ? "dashboard-toko.xlsx" : "dashboard-produk.xlsx", { target: "dashboard", format: "xlsx", query, mode }).then(() => reportedOk("Ekspor selesai.")).catch((err: Error) => setError(reported(err, "Ekspor gagal.")))}>Export</ActionButton>
@@ -183,6 +279,7 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           <select value={preset} onChange={(event) => applyPreset(event.target.value as Preset)}>
             <option value="month">Bulan berjalan</option>
             <option value="prev">Bulan lalu</option>
+            <option value="oct2026">Oktober 2026</option>
             <option value="d7">7 hari terakhir</option>
             <option value="d30">30 hari terakhir</option>
             <option value="custom">Pilih tanggal…</option>
@@ -202,10 +299,13 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
         </div>
         <div className="f"><label>Status pesanan</label>
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="">Semua status (termasuk Returned)</option>
-            <option value="xrc">Tanpa Returned & Canceled</option>
-            {(options?.statuses ?? ["PROCESSING", "SHIPPED", "COMPLETED", "RETURNED", "CANCELED"]).map((item) => <option key={item}>{item}</option>)}
+            <option value="">Tanpa batal{includeReturns ? "" : " & retur"}</option>
+            {includeReturns ? <option value="RETURNED">RETURNED</option> : null}
+            {(options?.statuses ?? ["PROCESSING", "SHIPPED", "COMPLETED"]).filter((item) => !/return|cancel/i.test(item)).map((item) => <option key={item}>{item}</option>)}
           </select>
+        </div>
+        <div className="f"><label>&nbsp;</label>
+          <button className={`tog ${includeReturns ? "on" : ""}`} onClick={() => setIncludeReturns((value) => !value)}><i /><b>Sertakan retur</b></button>
         </div>
         {mode === "toko" ? (
           <div className="f"><label>Channel</label>
@@ -235,15 +335,18 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
             <Kpi label="Total HPP" value={rpCompact(A.hpp)} hint={A.missingSkus ? `${A.missingSkus} SKU belum ada HPP (dihitung 0)` : "DPP × 1,11 (inkl. PPN)"} current={A.hpp} prior={C?.hpp} compare={compare} invert />
             <Kpi label="Total Biaya Platform" value={rpCompact(A.fee)} hint="dari impor pembayaran · pajak tidak dipotong" current={A.fee} prior={C?.fee} compare={compare} invert />
             <Kpi label="Total Marketing Spending" value={rpCompact(mode === "toko" ? A.marketing : 0)} hint={mode === "toko" ? "dari Master Marketing Spending · apa adanya dari report" : "tidak dipotong dari profit produk"} current={mode === "toko" ? A.marketing : 0} prior={mode === "toko" ? C?.marketing : 0} compare={compare && mode === "toko"} invert />
-            <Kpi label="Total Profit" value={rpCompact(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit)} hint={A.net ? `margin ${(((mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) / A.net) * 100).toFixed(1).replace(".", ",")}%` : ""} current={mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit} prior={C ? (mode === "toko" ? C.net - C.hpp - C.fee - C.marketing : C.profit) : undefined} compare={compare} tone={(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit) < 0 ? "bad" : "ok"} />
-            <Kpi label="Jumlah Pesanan" value={numId(A.orders)} hint="tidak termasuk Dihapus" current={A.orders} prior={C?.orders} compare={compare} money={false} />
+            <Kpi label="Kontribusi sebelum HPP" value={rpCompact(A.net - A.fee - (mode === "toko" ? A.marketing : 0))} hint="revenue − biaya platform − marketing" current={A.net - A.fee - (mode === "toko" ? A.marketing : 0)} prior={C ? C.net - C.fee - (mode === "toko" ? C.marketing : 0) : undefined} compare={compare} />
+            <Kpi label="Profit bersih" value={rpCompact(headline)} hint={A.net ? `margin ${((headline / A.net) * 100).toFixed(1).replace(".", ",")}%` : ""} current={headline} prior={priorHeadline} compare={compare} tone={headline < 0 ? "bad" : "ok"} />
+            <Kpi label="Retur (info)" value={A.returnsOrders == null ? "—" : numId(A.returnsOrders)} hint={A.returnsNet == null ? "menunggu migrasi 0018" : rp(A.returnsNet)} current={A.returnsOrders ?? 0} prior={C?.returnsOrders} compare={compare && A.returnsOrders != null} money={false} />
+            <Kpi label="Jumlah Pesanan" value={numId(A.orders)} hint="tanpa batal, tanpa retur kecuali dinyalakan" current={A.orders} prior={C?.orders} compare={compare} money={false} />
             <Kpi label="Qty Terjual" value={`${numId(A.qty)} pcs`} hint="" current={A.qty} prior={C?.qty} compare={compare} money={false} />
             <Kpi label="AOV" value={rpCompact(A.aov)} hint="Revenue Bersih ÷ Jumlah Pesanan" current={A.aov} prior={C?.aov} compare={compare} />
           </div>
           {A.missingSkus ? (
             <div className="warnbox mt"><b>{A.missingSkus} SKU belum punya HPP</b> di periode ini — dihitung <b>Rp0</b>, sehingga Profit terlihat lebih besar dari seharusnya.{A.missingSkuSample?.length ? ` Contoh: ${A.missingSkuSample.join(", ")}.` : ""} <a href="/produk/hpp">Lengkapi di Master Data › HPP</a></div>
           ) : null}
-          <div className="formula"><b>{profitLabel}</b> = Revenue Bersih <b>{rp(A.net)}</b> − HPP <b>{rp(A.hpp)}</b> − Biaya Platform <b>{rp(A.fee)}</b>{mode === "toko" ? <> − Marketing Spending <b>{rp(A.marketing)}</b></> : <> − Marketing <b>Rp0</b></>} = <b>{rp(mode === "toko" ? A.net - A.hpp - A.fee - A.marketing : A.profit)}</b></div>
+          <CompletenessBanner mpNet={A.mpNet} mpCovered={A.mpCovered} marketingThrough={report?.marketingThrough} periodTo={to} returnsOrders={A.returnsOrders} returnsNet={A.returnsNet} includeReturns={includeReturns} />
+          <div className="formula"><b>Profit bersih</b> = Revenue <b>{rp(A.net)}</b> − HPP <b>{rp(A.hpp)}</b> − Biaya platform <b>{rp(A.fee)}</b>{mode === "toko" ? <> − Marketing <b>{rp(A.marketing)}</b></> : null} = <b>{rp(headline)}</b>. Kontribusi sebelum HPP = <b>{rp(A.net - A.fee - (mode === "toko" ? A.marketing : 0))}</b>.</div>
           <div className="card mt">
             <h3>Tren Penjualan <small>{METRIC_LABEL[metric]} per hari</small></h3>
             <BarChart
@@ -256,15 +359,23 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           </div>
           {mode === "toko" ? (
             <>
-              <PerTable title="Penjualan per Toko" rows={(report?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} compareRows={(previous?.stores ?? []).map((row) => ({ ...row, marketing: row.marketing ?? 0, profit: storeProfit(row.net ?? 0, row.hpp ?? 0, row.fee ?? 0, row.marketing ?? 0) }))} metric={metric} compare={compare} showMarketing />
-              <PerTable title="Penjualan per Channel" rows={report?.channels ?? []} compareRows={previous?.channels} metric={metric} compare={compare} />
+              <LossRank
+                title="Toko/channel penyebab rugi"
+                hint="profit bersih paling negatif di atas · sudah termasuk marketing · klik membuka pesanan (profit pesanan = revenue − HPP − biaya platform, tanpa marketing)"
+                rows={lossRank}
+                loading={loading}
+                href={(row) => orderHref({ loss: true, channel: row.channel, store: row.store, sort: "profit" })}
+              />
+              <WaterfallTable title="Penjualan per Toko" hint="urut dari profit bersih terendah · baris bisa dibuka per channel" rows={storeRows} compareRows={compare ? previousStores : undefined} loading={loading} withMarketing expandable marketingThroughByStore={report?.marketingThroughByStore} periodTo={to} />
+              <WaterfallTable title="Penjualan per Channel" rows={channelProfitRows} compareRows={compare ? previousChannels : undefined} loading={loading} withMarketing marketingThrough={report?.marketingThrough} periodTo={to} />
+              <MarketingBreakdown rows={report?.marketingLines ?? []} loading={loading} />
               <StoreMoneyList
                 title="Pesanan rugi"
-                hint="profit di bawah nol, selain batal, termasuk retur dan channel internal · klik untuk membuka pesanan"
+                hint="profit pesanan di bawah nol: revenue − HPP − biaya platform, tanpa marketing · klik untuk membuka pesanan"
                 rows={report?.lossStores ?? []}
                 valueLabel="Total rugi"
                 loading={loading}
-                href={(row) => orderHref({ loss: true, channel: row.channel, store: row.storeName })}
+                href={(row) => orderHref({ loss: true, channel: row.channel, store: row.storeName, sort: "profit" })}
                 value={(row) => row.loss ?? 0}
               />
               <StoreMoneyList
@@ -276,14 +387,17 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
                 href={(row) => orderHref({ unpaid: true, channel: row.channel, store: row.storeName })}
                 value={(row) => row.net ?? 0}
               />
-              <div className="card mt"><h3>Penjualan per Channel <small>{METRIC_LABEL[metric]}</small></h3><Donut items={(report?.channels ?? []).map((row, index) => ({ label: row.key || "—", value: Math.max(0, metricOf(row, metric)), color: CHART_PAL[index % CHART_PAL.length] }))} /></div>
+              <div className="card mt"><h3>Penjualan per Channel <small>Profit bersih</small></h3><Donut items={channelProfitRows.filter((row) => (row.profit ?? 0) > 0).map((row, index) => ({ label: row.key || "—", value: row.profit ?? 0, color: CHART_PAL[index % CHART_PAL.length] }))} />{channelProfitRows.some((row) => (row.profit ?? 0) < 0) ? <div className="mut small">Channel dengan profit negatif tidak masuk donat. Lihat Toko/channel penyebab rugi.</div> : null}</div>
             </>
           ) : (
             <>
+              <ProductLossList title="Produk rugi" hint="profit = revenue − HPP − biaya platform, paling negatif di atas · klik membuka pesanan SKU itu" rows={losingProducts} loading={loading} href={(row) => orderHref({ skus: row.sku || row.key, sort: "profit" })} empty="Tidak ada produk dengan profit di bawah nol." />
+              <ProductLossList title="Margin tipis (<10%)" hint="masih untung, margin di bawah 10%" rows={thinProducts} loading={loading} href={(row) => orderHref({ skus: row.sku || row.key, sort: "profit", excludeCancelled: true })} empty="Tidak ada produk dengan margin di bawah 10%." />
               <TopProfit rows={report?.topProfit ?? []} loading={loading} />
-              <PerTable title="Penjualan per Produk" rows={(report?.products ?? []).map((row) => ({ ...row, key: row.name ? `${row.sku} · ${row.name}` : row.sku }))} compareRows={previous?.products} metric={metric} compare={compare} defaultSize={10} />
-              <PerTable title="Penjualan per Kategori" rows={report?.categories ?? []} compareRows={previous?.categories} metric={metric} compare={compare} />
-              <PerTable title="Penjualan per Brand" rows={report?.brands ?? []} compareRows={previous?.brands} metric={metric} compare={compare} defaultSize={10} />
+              <div className="note mt">10 SKU teratas {(topShare(10) * 100).toFixed(1).replace(".", ",")}% revenue. 20 SKU teratas {(topShare(20) * 100).toFixed(1).replace(".", ",")}% revenue. {losingProducts.length} SKU rugi, total {rp(losingProducts.reduce((sum, row) => sum + row.profit, 0))}.</div>
+              <WaterfallTable title="Penjualan per Produk" rows={productRows} compareRows={compare ? previousProducts : undefined} loading={loading} withMarketing={false} showUnits showReturns />
+              <WaterfallTable title="Penjualan per Kategori" rows={(report?.categories ?? []).map((row) => toProfit(row))} compareRows={compare ? (previous?.categories ?? []).map((row) => toProfit(row)) : undefined} loading={loading} withMarketing={false} />
+              <WaterfallTable title="Penjualan per Brand" rows={(report?.brands ?? []).map((row) => toProfit(row))} compareRows={compare ? (previous?.brands ?? []).map((row) => toProfit(row)) : undefined} loading={loading} withMarketing={false} />
             </>
           )}
           <div className="tablecard mt">
@@ -297,17 +411,17 @@ export function CommerceDashboard({ mode }: { mode: Mode }) {
           </div>
           <div className="grid g2 mt">
             <Best title={mode === "toko" ? "Best Seller Produk" : "Best Seller Toko"} rows={mode === "toko" ? (report?.products ?? []).map((row) => ({ ...row, key: row.name || row.sku })) : (report?.stores ?? [])} metric={metric} />
-            <Best title={mode === "toko" ? "Best Seller Brand" : "Best Seller Channel"} rows={mode === "toko" ? (report?.brands ?? []) : (report?.channels ?? [])} metric={metric} />
+            <Best title={mode === "toko" ? "Best Seller Brand" : "Best Seller Channel"} rows={mode === "toko" ? (report?.brands ?? []) : channelProfitRows.map((row) => ({ key: row.key, gross: row.gross ?? 0, net: row.net, qty: row.qty, orders: row.orders, hpp: row.hpp, fee: row.fee, marketing: row.marketing, profit: row.profit ?? 0 }))} metric={metric} />
           </div>
           <div className="note mt">
             <b>Catatan perhitungan</b>
             <ul>
-              <li><b>{profitLabel}</b> = Revenue Bersih − HPP − Biaya Platform{mode === "toko" ? " − Marketing Spending" : ". Marketing ditampilkan 0"}.</li>
-              <li><b>Biaya Platform</b> dari impor pembayaran. Pajak (PPh) dicatat tetapi tidak mengurangi profit. HPP yang belum ada dihitung 0.</li>
-              <li><b>Marketing Spending</b> mengikuti periode dan filter toko, apa adanya dari report (tanpa PPN). Spend mingguan dihitung utuh bila periodenya masuk jendela, dan diprorata per hari bila hanya sebagian. Tidak dipecah per channel atau SKU. Profit toko menguranginya; profit produk tidak.</li>
-              <li><b>HPP</b> = HPP Accurate bulan pesanan (posisi tanggal 1) = DPP × 1,11. Jika snapshot bulan hilang, dipakai bulan sebelumnya. SKU yang sama sekali belum punya HPP dihitung 0.</li>
-              <li>Pesanan <b>Dihapus</b> tidak dihitung. Pesanan <b>-R</b> (Barang Hilang, harga 0) ikut dihitung. RETURNED ikut kecuali difilter keluar.</li>
-              <li><b>Belum ada pembayaran</b> adalah pesanan yang revenue-nya bukan nol dan belum punya settlement maupun catatan pembayaran. Revenue nol dihitung lunas. Semua channel ikut, termasuk website, offline, dan POS. Retur tetap dihitung.</li>
+              <li><b>Profit bersih</b> = Revenue − HPP − Biaya platform{mode === "toko" ? " − Marketing" : ""}. <b>Kontribusi sebelum HPP</b> = Revenue − Biaya platform{mode === "toko" ? " − Marketing" : ""}. HPP yang belum ada dihitung 0 dan ditandai HPP belum lengkap.</li>
+              <li><b>Biaya platform</b> dari impor pembayaran. PPh dicatat tetapi tidak mengurangi profit. Biaya iklan GMV Max dan Voucher GMV Max dicatat tetapi tidak dipotong di sini, karena sudah masuk Marketing.</li>
+              <li><b>Marketing</b> diprorata per hari. TikTok Ads dibagi ke TikTok dan Tokopedia menurut revenue toko itu. Shopee Ads, CPAS, dan Meta Ads masuk ke Shopee. Meta tetap baris sendiri di rincian. Filter channel hanya memotong iklan channel itu.</li>
+              <li><b>Profit produk</b> tidak memotong marketing. Marketing hanya di tingkat toko dan channel. Profit satu pesanan = revenue − HPP − biaya platform.</li>
+              <li>Pesanan <b>batal</b> tidak dihitung. <b>Retur</b> tetap ada di data dan ditampilkan sebagai angka info. Angka utama mengikutkannya hanya bila Sertakan retur nyala. Pesanan Dihapus tidak dihitung. Pesanan -R (harga 0) ikut sebagai biaya promosi bila revenue-nya nol.</li>
+              <li>Profit bertanda <b>Sementara</b> bila biaya platform belum menutup 100% revenue marketplace, atau data marketing berhenti sebelum akhir periode.</li>
             </ul>
           </div>
         </>
@@ -392,15 +506,6 @@ function Kpi({ label, value, hint, current, prior, compare, invert, money = true
       <div className="v" style={tone ? { color: tone === "bad" ? "var(--bad)" : "var(--ok)" } : undefined}>{value}</div>
       <div className="s">{hint}</div>
       {compare ? <div className="s cmpv">{delta == null ? "—" : <span className={good ? "up" : "dn"}>{delta >= 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(1).replace(".", ",")}%</span>} {prior != null ? <span className="mut">vs {money ? rpCompact(prior) : numId(prior)}</span> : null}</div> : null}
-    </div>
-  );
-}
-
-function PerTable({ title, rows, compareRows, metric, compare, defaultSize = 25, showMarketing = false }: { title: string; rows: GroupRow[]; compareRows?: GroupRow[]; metric: Metric; compare: boolean; defaultSize?: number; showMarketing?: boolean }) {
-  return (
-    <div className="tablecard mt">
-      <div className="th3"><b>{title}</b> <small className="mut">urut {METRIC_LABEL[metric]}</small></div>
-      <PerBody rows={rows} compareRows={compareRows} metric={metric} compare={compare} defaultSize={defaultSize} tableKey={title} col={title.replace("Penjualan per ", "")} showMarketing={showMarketing} />
     </div>
   );
 }

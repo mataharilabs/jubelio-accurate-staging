@@ -7,7 +7,7 @@ import { Pager, usePageSize } from "@/components/ui/pager";
 import { api, track } from "@/lib/api-client";
 import { canMaintainMaster } from "@/lib/auth/permissions";
 import type { AppMeta, OrderPage, OrderPageRow } from "@/lib/db/types";
-import { booksClosed, needsAccurateSync, yesterdayWib } from "@/lib/domain/phase3";
+import { booksClosed, currentMonthRange, needsAccurateSync, previousMonthRange, yesterdayWib } from "@/lib/domain/phase3";
 import { numId, rp } from "@/lib/format";
 import { OFFICIAL_CITIES, OFFICIAL_PROVINCES } from "@/lib/region/names";
 
@@ -57,6 +57,10 @@ export function OrdersView() {
   const [sync, setSync] = useState<"" | "need" | "done">("");
   const [loss, setLoss] = useState(false);
   const [unpaid, setUnpaid] = useState(false);
+  const [sort, setSort] = useState<"" | "profit">("");
+  const [excludeReturns, setExcludeReturns] = useState(false);
+  const [excludeCancelled, setExcludeCancelled] = useState(false);
+  const [skuFilter, setSkuFilter] = useState("");
   const [dataStatus, setDataStatus] = useState<"active" | "deleted" | "all">("active");
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [channelOptions, setChannelOptions] = useState<string[]>([]);
@@ -82,7 +86,7 @@ export function OrdersView() {
   const [error, setError] = useState<string | null>(null);
   const [salesPush, setSalesPush] = useState(false);
 
-  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid) {
+  function queryString(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort, nextExclude = excludeReturns, nextSkus = skuFilter, nextExcludeCancelled = excludeCancelled) {
     const params = new URLSearchParams({ q: nextQ, page: String(nextPage), dataStatus: nextData, limit: String(nextLimit) });
     if (nextFrom) params.set("from", nextFrom);
     if (nextTo) params.set("to", nextTo);
@@ -92,15 +96,21 @@ export function OrdersView() {
     if (nextSync) params.set("sync", nextSync);
     if (nextLoss) params.set("loss", "1");
     if (nextUnpaid) params.set("unpaid", "1");
+    if (nextSort === "profit") params.set("sort", "profit");
+    if (nextExclude) params.set("excludeReturns", "1");
+    if (nextExcludeCancelled) params.set("excludeCancelled", "1");
+    if (nextSkus) params.set("skus", nextSkus);
     return params.toString();
   }
 
-  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid) {
+  async function load(nextPage = page, nextFrom = from, nextTo = to, nextStatus = status, nextQ = q, nextData = dataStatus, nextChannel = channel, nextStore = storeName, nextSync = sync, nextLimit = pageSize, nextLoss = loss, nextUnpaid = unpaid, nextSort = sort, nextExclude = excludeReturns, nextSkus = skuFilter, nextExcludeCancelled = excludeCancelled) {
+    const requestId = ++loadSeq.current;
     setLoading(true);
     try {
-      setData(await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid)}`));
+      const result = await api<OrderPage>(`/api/orders?${queryString(nextPage, nextFrom, nextTo, nextStatus, nextQ, nextData, nextChannel, nextStore, nextSync, nextLimit, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus, nextExcludeCancelled)}`);
+      if (requestId === loadSeq.current) setData(result);
     } finally {
-      setLoading(false);
+      if (requestId === loadSeq.current) setLoading(false);
     }
   }
 
@@ -119,6 +129,7 @@ export function OrdersView() {
     }).catch(() => setCanAdd(false));
   }, []);
   const started = useRef(false);
+  const loadSeq = useRef(0);
   useEffect(() => {
     if (!pageReady || started.current) return;
     started.current = true;
@@ -128,16 +139,26 @@ export function OrdersView() {
     const nextStatus = params.get("statuses") ?? "";
     const nextChannel = params.get("channels") ?? "";
     const nextStore = params.get("stores") ?? "";
+    const nextQ = params.get("q") ?? "";
     const nextLoss = params.get("loss") === "1" || params.get("loss") === "true";
     const nextUnpaid = params.get("unpaid") === "1" || params.get("unpaid") === "true";
+    const nextSort: "" | "profit" = params.get("sort") === "profit" || (nextLoss && params.get("sort") !== "day") ? "profit" : "";
+    const nextExclude = params.get("excludeReturns") === "1" || params.get("excludeReturns") === "true";
+    const nextExcludeCancelled = params.get("excludeCancelled") === "1" || params.get("excludeCancelled") === "true";
+    const nextSkus = params.get("skus") ?? "";
     setFrom(nextFrom);
     setTo(nextTo);
     setStatus(nextStatus);
+    setQ(nextQ);
     setChannel(nextChannel);
     setStoreName(nextStore);
     setLoss(nextLoss);
     setUnpaid(nextUnpaid);
-    load(0, nextFrom, nextTo, nextStatus, "", "active", nextChannel, nextStore, "", pageSize, nextLoss, nextUnpaid).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
+    setSort(nextSort);
+    setExcludeReturns(nextExclude);
+    setExcludeCancelled(nextExcludeCancelled);
+    setSkuFilter(nextSkus);
+    load(0, nextFrom, nextTo, nextStatus, nextQ, "active", nextChannel, nextStore, "", pageSize, nextLoss, nextUnpaid, nextSort, nextExclude, nextSkus, nextExcludeCancelled).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan.")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageReady, pageSize]);
 
@@ -211,6 +232,10 @@ export function OrdersView() {
       sync,
       loss,
       unpaid,
+      sort,
+      excludeReturns,
+      excludeCancelled,
+      skus: skuFilter ? skuFilter.split(",").map((item) => item.trim()).filter(Boolean) : [],
       nos: picked.size ? [...picked] : undefined,
     }).then(() => { reportedOk("Ekspor selesai."); }).catch((err: Error) => setError(reported(err, "Ekspor gagal.")));
   }
@@ -290,6 +315,13 @@ export function OrdersView() {
         <div className="f"><label>&nbsp;</label><ActionButton className="btn" onClick={() => { setPage(0); return load(0).catch((err: Error) => setError(reported(err, "Gagal memuat pesanan."))); }}>Cari</ActionButton></div>
         <div className="f"><label>Dari</label><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); setPage(0); load(0, event.target.value, to, status, q, dataStatus).catch((err: Error) => setError(reported(err))); }} /></div>
         <div className="f"><label>Sampai</label><input type="date" value={to} onChange={(event) => { setTo(event.target.value); setPage(0); load(0, from, event.target.value, status, q, dataStatus).catch((err: Error) => setError(reported(err))); }} /></div>
+        <div className="f"><label>Periode</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button type="button" className="btn sm" onClick={() => { const range = currentMonthRange(); setFrom(range.from); setTo(range.to); setPage(0); load(0, range.from, range.to, status, q, dataStatus).catch((err: Error) => setError(reported(err))); }}>Bulan ini</button>
+            <button type="button" className="btn sm" onClick={() => { const range = previousMonthRange(currentMonthRange().to); setFrom(range.from); setTo(range.to); setPage(0); load(0, range.from, range.to, status, q, dataStatus).catch((err: Error) => setError(reported(err))); }}>Bulan lalu</button>
+            <button type="button" className="btn sm" onClick={() => { setFrom("2026-10-01"); setTo("2026-10-31"); setPage(0); load(0, "2026-10-01", "2026-10-31", status, q, dataStatus).catch((err: Error) => setError(reported(err))); }}>Okt 2026</button>
+          </div>
+        </div>
         <div className="f"><label>Status pesanan</label>
           <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(0); load(0, from, to, event.target.value, q, dataStatus).catch((err: Error) => setError(reported(err))); }}>
             <option value="">Semua</option>
@@ -313,13 +345,15 @@ export function OrdersView() {
           <select aria-label="Filter rugi atau belum bayar" value={loss ? "loss" : unpaid ? "unpaid" : ""} onChange={(event) => {
             const nextLoss = event.target.value === "loss";
             const nextUnpaid = event.target.value === "unpaid";
+            const nextSort: "" | "profit" = nextLoss ? "profit" : "";
             setLoss(nextLoss);
             setUnpaid(nextUnpaid);
+            setSort(nextSort);
             setPage(0);
-            load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, nextLoss, nextUnpaid).catch((err: Error) => setError(reported(err)));
+            load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, nextLoss, nextUnpaid, nextSort).catch((err: Error) => setError(reported(err)));
           }}>
             <option value="">Semua</option>
-            <option value="loss">Rugi</option>
+            <option value="loss">Rugi (revenue − HPP − biaya platform)</option>
             <option value="unpaid">Belum ada pembayaran</option>
           </select>
         </div>
@@ -338,10 +372,19 @@ export function OrdersView() {
           </select>
         </div>
       </div>
+      {excludeReturns || excludeCancelled || skuFilter ? (
+        <div className="note" style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {excludeReturns ? <button type="button" className="pill p-warn" onClick={() => { setExcludeReturns(false); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, sort, false, skuFilter, excludeCancelled).catch((err: Error) => setError(reported(err))); }}>Tanpa retur ×</button> : null}
+          {excludeCancelled ? <button type="button" className="pill p-warn" onClick={() => { setExcludeCancelled(false); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, sort, excludeReturns, skuFilter, false).catch((err: Error) => setError(reported(err))); }}>Tanpa batal ×</button> : null}
+          {skuFilter ? <button type="button" className="pill p-gray" onClick={() => { setSkuFilter(""); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, sort, excludeReturns, "", excludeCancelled).catch((err: Error) => setError(reported(err))); }}>SKU: {skuFilter} ×</button> : null}
+          <span className="mut">Klik untuk melepas filter dari dashboard.</span>
+        </div>
+      ) : null}
+      {loss || sort === "profit" ? <div className="note" style={{ marginBottom: 12 }}>Profit pesanan = revenue − HPP − biaya platform dari seluruh baris pesanan, bukan hanya SKU yang tampil. Marketing tidak dipotong di sini. PPh dan biaya iklan GMV Max tidak mengurangi profit. Urutan dari profit terkecil bila kolom Profit pesanan aktif.</div> : null}
       <TableShell loading={loading}>
         <div className="tscroll">
           <table className="small cards">
-            <thead><tr><th></th><th>No pesanan</th><th>Tgl</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Revenue</th><th className="n">Laba</th><th>Status</th><th>Status data</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
+            <thead><tr><th></th><th>No pesanan</th><th>Tgl</th><th>Channel</th><th>Toko</th><th>SKU</th><th className="n">Qty</th><th className="n">Revenue</th><th className="n">Laba</th><th className="n"><button type="button" className="btn sm" onClick={() => { const next = sort === "profit" ? "" : "profit"; setSort(next); setPage(0); load(0, from, to, status, q, dataStatus, channel, storeName, sync, pageSize, loss, unpaid, next).catch((err: Error) => setError(reported(err))); }}>Profit pesanan{sort === "profit" ? " ↑" : ""}</button></th><th>Status</th><th>Status data</th><th>Tgl Updated</th><th>Tgl Synced</th><th></th></tr></thead>
             <tbody>
               {data?.rows.map((row) => {
                 const need = needsAccurateSync({ dataStatus: row.dataStatus, contentUpdatedAt: row.contentUpdatedAt, syncedAt: row.syncedAt });
@@ -356,6 +399,7 @@ export function OrdersView() {
                   <td data-label="Qty" className="n">{numId(row.qty)}</td>
                   <td data-label="Revenue" className="n">{rp((row.revenuePerUnit ?? 0) * row.qty)}</td>
                   <td data-label="Laba" className="n">{row.grossProfit == null ? "—" : rp(row.grossProfit)}</td>
+                  <td data-label="Profit pesanan" className="n"><span className={(row.orderProfit ?? 0) < 0 ? "dn" : undefined}>{row.orderProfit == null ? "—" : rp(row.orderProfit)}</span></td>
                   <td data-label="Status">{row.status || "—"}{row.returnCase ? <div className="small mut">Case {row.returnCase}</div> : null}</td>
                   <td data-label="Status data">{row.dataStatus === "deleted" ? <span className="pill p-bad">Dihapus</span> : <span className="pill p-ok">Aktif</span>}</td>
                   <td data-label="Updated">{row.contentUpdatedAt ? row.contentUpdatedAt.slice(0, 16).replace("T", " ") : "—"}</td>
